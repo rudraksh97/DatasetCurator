@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache
+.venv
+env/
+venv/
+.DS_Store
+storage/raw/*
+storage/curated/*
+*.db
+*.sqlite
+node_modules
+dist
+build
+alembic/versions

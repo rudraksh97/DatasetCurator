@@ -1,0 +1,47 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Storage (keep structure, ignore contents)
+storage/raw/*
+storage/curated/*
+!storage/raw/.gitkeep
+!storage/curated/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml

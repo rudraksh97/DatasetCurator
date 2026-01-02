@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dataset_curator
+      POSTGRES_PASSWORD: dataset_curator
+      POSTGRES_DB: dataset_curator
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  api:
+    build: ./backend
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+asyncpg://dataset_curator:dataset_curator@db:5432/dataset_curator
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./examples:/app/examples
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pg_data:
