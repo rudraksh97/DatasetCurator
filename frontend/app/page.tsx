@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { downloadCuratedFile, uploadDataset, sendChatMessage, getPreview } from "@/lib/api";
+import { downloadCuratedFile, uploadDataset, sendChatMessage, sendChatMessageStream, getPreview } from "@/lib/api";
+import type { StreamEvent } from "@/lib/api";
 import type { UploadResponse } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -173,9 +174,9 @@ export default function Home() {
     }
   }, [datasetId, activeSession]);
 
-  const addMessage = (role: "user" | "assistant", content: string) => {
+  const addMessage = (role: "user" | "assistant", content: string, id?: string) => {
     const newMessage: ChatMessage = { 
-      id: Date.now().toString(), 
+      id: id || Date.now().toString(), 
       role, 
       content, 
       timestamp: new Date() 
@@ -187,6 +188,20 @@ export default function Home() {
         localStorage.setItem(`chat_history_${datasetId}`, JSON.stringify(updated));
         // Trigger storage event for sidebar update
         window.dispatchEvent(new Event("storage"));
+      }
+      return updated;
+    });
+    
+    return newMessage.id;
+  };
+
+  const updateMessage = (id: string, content: string) => {
+    setMessages((prev: ChatMessage[]) => {
+      const updated = prev.map((msg) => 
+        msg.id === id ? { ...msg, content } : msg
+      );
+      if (datasetId) {
+        localStorage.setItem(`chat_history_${datasetId}`, JSON.stringify(updated));
       }
       return updated;
     });
@@ -238,8 +253,9 @@ export default function Home() {
       ]));
       window.dispatchEvent(new Event("storage"));
       
-    } catch (e: any) {
-      addMessage("assistant", `Error processing dataset: ${e.message}`);
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      addMessage("assistant", `Error processing dataset: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
       // Reset file input
@@ -287,13 +303,58 @@ export default function Home() {
     }
 
     setIsProcessing(true);
+    
+    // Create a streaming message placeholder
+    const streamingMsgId = `streaming_${Date.now()}`;
+    let streamingContent = "";
+    let isMultiStep = false;
+    
     try {
-      const response = await sendChatMessage(sessionId, msg);
-      addMessage("assistant", response.assistant_message);
+      await sendChatMessageStream(sessionId, msg, (event: StreamEvent) => {
+        switch (event.type) {
+          case "plan":
+            // Multi-step operation starting
+            isMultiStep = true;
+            const stepList = event.data.steps?.map((s, i) => `${i + 1}. ${s}`).join("\n") || "";
+            streamingContent = `**Planning ${event.data.total_steps} steps:**\n${stepList}\n\n---\n`;
+            addMessage("assistant", streamingContent, streamingMsgId);
+            break;
+            
+          case "step_start":
+            // Step is starting
+            streamingContent += `\n**Step ${event.data.step}:** ${event.data.description}\n  ⏳ *Executing...*`;
+            updateMessage(streamingMsgId, streamingContent);
+            break;
+            
+          case "step_complete":
+            // Step finished - replace the "Executing..." with result
+            const icon = event.data.success ? "✓" : "✗";
+            streamingContent = streamingContent.replace(
+              /⏳ \*Executing\.\.\.\*$/,
+              `${icon} ${event.data.message}`
+            );
+            updateMessage(streamingMsgId, streamingContent);
+            break;
+            
+          case "message":
+            // Simple message (non-multi-step)
+            if (!isMultiStep) {
+              addMessage("assistant", event.data.content || "");
+            }
+            break;
+            
+          case "done":
+            // All done - update with final message if multi-step
+            if (isMultiStep && event.data.final_message) {
+              updateMessage(streamingMsgId, event.data.final_message);
+            }
+            break;
+        }
+      });
       
       // Refresh data preview after chat (transformations may have occurred)
       try {
-        const data = await getPreview(datasetId, currentPage, 50);
+        const data = await getPreview(sessionId, currentPage, 50);
         if (data) {
           setPreview(data.preview || []);
           setCurrentPage(data.page || 1);
@@ -303,15 +364,16 @@ export default function Home() {
       } catch {
         // Ignore preview fetch errors
       }
-    } catch (e: any) {
-      addMessage("assistant", `I encountered an error: ${e.message}. Try uploading a dataset first!`);
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      addMessage("assistant", `I encountered an error: ${errorMessage}. Try uploading a dataset first!`);
     } finally {
       setIsProcessing(false);
     }
   };
 
   return (
-    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={"app-layout" + (sidebarCollapsed ? " sidebar-collapsed" : "")}>
       <Sidebar
         activeSessionId={activeSession}
         onSelectSession={handleSelectSession}
@@ -422,55 +484,57 @@ export default function Home() {
           </div>
 
           {preview.length > 0 ? (
-            <ScrollArea className="table-scroll">
-              <Table>
-                <THead>
-                  <TR>
-                    {Object.keys(preview[0]).map((col: string) => (
-                      <TH key={col}>{col}</TH>
-                    ))}
-                  </TR>
-                </THead>
-                <TBody>
-                  {preview.map((row: Record<string, unknown>, idx: number) => (
-                    <TR key={idx}>
-                      {Object.entries(row).map(([col, val]: [string, unknown]) => (
-                        <TD key={col}>{val === null || val === "" ? <span className="null-value">null</span> : String(val)}</TD>
+            <>
+              <ScrollArea className="table-scroll">
+                <Table>
+                  <THead>
+                    <TR>
+                      {Object.keys(preview[0]).map((col: string) => (
+                        <TH key={col}>{col}</TH>
                       ))}
                     </TR>
-                  ))}
-                </TBody>
-              </Table>
-            </ScrollArea>
-            
-            {totalPages > 1 && (
-              <div className="pagination-controls" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e5e7eb" }}>
-                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handlePageChange(currentPage - 1)}
-                    disabled={currentPage === 1}
-                  >
-                    Previous
-                  </Button>
-                  <span style={{ fontSize: "0.875rem", color: "#6b7280" }}>
-                    Page {currentPage} of {totalPages}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handlePageChange(currentPage + 1)}
-                    disabled={currentPage === totalPages}
-                  >
-                    Next
-                  </Button>
+                  </THead>
+                  <TBody>
+                    {preview.map((row: Record<string, unknown>, idx: number) => (
+                      <TR key={idx}>
+                        {Object.entries(row).map(([col, val]: [string, unknown]) => (
+                          <TD key={col}>{val === null || val === "" ? <span className="null-value">null</span> : String(val)}</TD>
+                        ))}
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+              </ScrollArea>
+              
+              {totalPages > 1 && (
+                <div className="pagination-controls" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e5e7eb" }}>
+                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handlePageChange(currentPage - 1)}
+                      disabled={currentPage === 1}
+                    >
+                      Previous
+                    </Button>
+                    <span style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handlePageChange(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                  <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                    Showing {((currentPage - 1) * 50) + 1} - {Math.min(currentPage * 50, totalRows)} of {totalRows} rows
+                  </div>
                 </div>
-                <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
-                  Showing {((currentPage - 1) * 50) + 1} - {Math.min(currentPage * 50, totalRows)} of {totalRows} rows
-                </div>
-              </div>
-            )}
+              )}
+            </>
           ) : (
             <div className="empty-state">
               <div className="empty-icon">{Icons.barChart}</div>

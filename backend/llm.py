@@ -78,6 +78,162 @@ DATA_OPERATIONS = [
     "strip_whitespace",
 ]
 
+# ---- Multi-Step Planning ---------------------------------------------------
+PLANNER_SYSTEM_TEMPLATE = """You are a dataset transformation planner. Your job is to break down user requests into a sequence of atomic operations.
+
+Given a user's request and the available columns, create a plan with individual steps.
+
+IMPORTANT RULES:
+1. Each step should be ONE atomic operation
+2. Steps execute in order - later steps see results of earlier steps
+3. If a request has only ONE operation, return a single step
+4. Order matters: do filtering/dropping rows BEFORE column operations when possible
+5. Be specific about column names and values
+
+Available operations: {DATA_OPERATIONS}
+
+Operation parameter formats:
+- drop_column: {{"column": "col_name"}}
+- rename_column: {{"old_name": "old", "new_name": "new"}}
+- drop_nulls: {{}} or {{"column": "col_name"}}
+- fill_nulls: {{"column": "col_name", "value": "fill_value"}}
+- drop_duplicates: {{}} or {{"column": "col_name"}}
+- filter_rows: {{"column": "col_name", "operator": "op", "value": "val"}} - KEEPS matching rows
+- drop_rows: {{"column": "col_name", "operator": "op", "value": "val"}} - REMOVES matching rows
+- add_column: {{"name": "col_name", "value": "static_value"}}
+- add_conditional_column (simple): {{"name": "col_name", "condition_column": "col", "operator": "op", "threshold": val, "true_value": "yes", "false_value": "no"}}
+- add_conditional_column (MULTIPLE CONDITIONS - use this for ranges like "X as A, Y as B, Z as C"):
+  {{"name": "col_name", "condition_column": "col", "conditions": [
+    {{"operator": "<", "value": 30, "result": "Hard"}},
+    {{"operator": "between", "value1": 30, "value2": 60, "result": "Medium"}},
+    {{"operator": ">", "value": 60, "result": "Easy"}}
+  ]}}
+- convert_type: {{"column": "col_name", "dtype": "int|float|str|datetime"}}
+- sort: {{"column": "col_name", "ascending": true|false}}
+- replace_values: {{"column": "col_name", "old_value": "old", "new_value": "new"}}
+- lowercase: {{"column": "col_name"}}
+- uppercase: {{"column": "col_name"}}
+- strip_whitespace: {{"column": "col_name"}}
+
+CRITICAL: When user wants a column with MULTIPLE categories/ranges (e.g., "< 30 as Hard, 30-60 as Medium, > 60 as Easy"):
+- Use ONE add_conditional_column with "conditions" array - DO NOT create multiple steps!
+- The "conditions" array handles all ranges in a single operation
+
+Operators for filter_rows/drop_rows: ==, !=, >, <, >=, <=, contains, startswith, endswith
+
+Available columns: {columns}
+
+Respond with ONLY valid JSON in this format:
+{{
+  "is_multi_step": true/false,
+  "steps": [
+    {{"step": 1, "description": "Human readable description", "operation": "op_name", "params": {{...}}}}
+  ]
+}}
+
+Examples:
+
+User: "remove nulls and drop the age column"
+{{
+  "is_multi_step": true,
+  "steps": [
+    {{"step": 1, "description": "Remove rows with null values", "operation": "drop_nulls", "params": {{}}}},
+    {{"step": 2, "description": "Drop the age column", "operation": "drop_column", "params": {{"column": "age"}}}}
+  ]
+}}
+
+User: "drop column X"
+{{
+  "is_multi_step": false,
+  "steps": [
+    {{"step": 1, "description": "Drop column X", "operation": "drop_column", "params": {{"column": "X"}}}}
+  ]
+}}
+
+User: "clean the data: remove duplicates, drop nulls, and sort by date descending"
+{{
+  "is_multi_step": true,
+  "steps": [
+    {{"step": 1, "description": "Remove duplicate rows", "operation": "drop_duplicates", "params": {{}}}},
+    {{"step": 2, "description": "Remove rows with null values", "operation": "drop_nulls", "params": {{}}}},
+    {{"step": 3, "description": "Sort by date in descending order", "operation": "sort", "params": {{"column": "date", "ascending": false}}}}
+  ]
+}}
+
+User: "remove rows where status is inactive, then rename status to active_status"
+{{
+  "is_multi_step": true,
+  "steps": [
+    {{"step": 1, "description": "Remove rows where status is inactive", "operation": "drop_rows", "params": {{"column": "status", "operator": "==", "value": "inactive"}}}},
+    {{"step": 2, "description": "Rename status column to active_status", "operation": "rename_column", "params": {{"old_name": "status", "new_name": "active_status"}}}}
+  ]
+}}
+
+User: "remove nulls and add a difficulty column where score < 30 is Hard, 30 to 60 is Medium, and above 60 is Easy"
+{{
+  "is_multi_step": true,
+  "steps": [
+    {{"step": 1, "description": "Remove rows with null values", "operation": "drop_nulls", "params": {{}}}},
+    {{"step": 2, "description": "Add difficulty column based on score ranges", "operation": "add_conditional_column", "params": {{
+      "name": "Difficulty",
+      "condition_column": "score",
+      "conditions": [
+        {{"operator": "<", "value": 30, "result": "Hard"}},
+        {{"operator": "between", "value1": 30, "value2": 60, "result": "Medium"}},
+        {{"operator": ">", "value": 60, "result": "Easy"}}
+      ]
+    }}}}
+  ]
+}}
+
+User: "create a column called Category where price < 50 is Budget, 50-200 is Standard, over 200 is Premium"
+{{
+  "is_multi_step": false,
+  "steps": [
+    {{"step": 1, "description": "Add Category column based on price ranges", "operation": "add_conditional_column", "params": {{
+      "name": "Category",
+      "condition_column": "price",
+      "conditions": [
+        {{"operator": "<", "value": 50, "result": "Budget"}},
+        {{"operator": "between", "value1": 50, "value2": 200, "result": "Standard"}},
+        {{"operator": ">", "value": 200, "result": "Premium"}}
+      ]
+    }}}}
+  ]
+}}
+
+ONLY respond with JSON."""
+
+
+async def create_execution_plan(
+    user_message: str,
+    columns: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Break down a user request into executable steps."""
+    
+    columns_str = ", ".join(columns) if columns else "No columns available"
+    
+    system_prompt = PLANNER_SYSTEM_TEMPLATE.format(
+        DATA_OPERATIONS=", ".join(DATA_OPERATIONS),
+        columns=columns_str,
+    )
+    
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ]
+    
+    try:
+        response = await chat_completion(messages, temperature=0.1, max_tokens=1000)
+        result = _parse_json_response(response)
+        if result and "steps" in result:
+            return result
+    except Exception as e:
+        print(f"Planning error: {e}")
+    
+    # Fallback: return empty plan
+    return {"is_multi_step": False, "steps": []}
+
 # ---- Prompts ---------------------------------------------------------------
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
 
@@ -87,9 +243,9 @@ IMPORTANT: Distinguish between QUESTIONS and COMMANDS!
 
 Classify the user's message into ONE of these intents:
 
-1. "show_data" - User wants to preview current data
-2. "transform_data" - User gives a COMMAND to MODIFY data (remove, delete, drop, add, rename, filter)
-3. "chat" - QUESTIONS about data OR general conversation (are there, how many, what, check, tell me, do I have)
+1. "transform_data" - User gives a COMMAND to MODIFY data (single OR multiple operations)
+   - Examples: "remove column X", "drop nulls and sort by date", "clean the data"
+2. "chat" - Everything else: QUESTIONS about data, show data requests, general conversation
 
 CRITICAL DISTINCTION:
 - "are there any nulls?" → chat (asking a QUESTION)
@@ -304,6 +460,7 @@ async def classify_intent(
     system_prompt = INTENT_SYSTEM_TEMPLATE.format(
         has_data=has_data,
         columns_info=columns_info,
+        DATA_OPERATIONS=", ".join(DATA_OPERATIONS),
     )
 
     messages = [

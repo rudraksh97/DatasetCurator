@@ -1,104 +1,300 @@
-# Agentic Dataset Curator
+# Dataset Curator
 
-An AI-powered tool for ingesting, analyzing, cleaning, and documenting datasets. Built with FastAPI (backend), Next.js (frontend), and LLM integration via OpenRouter.
+An AI-powered tool for cleaning and transforming CSV datasets through natural language. Built with FastAPI, Next.js, and LangGraph.
+
+```
++------------------+     +------------------+     +------------------+
+|                  |     |                  |     |                  |
+|  Upload CSV      | --> |  Chat with AI    | --> |  Download Clean  |
+|                  |     |                  |     |  Dataset         |
++------------------+     +------------------+     +------------------+
+```
 
 ## Features
 
-- **Dataset Ingestion** - Upload CSV files for analysis
-- **Schema Inference** - Automatically detect column types and structure
-- **Quality Analysis** - Identify missing values, duplicates, outliers, type mismatches
-- **AI Chat Interface** - Interact with your data through natural language
-- **Automated Cleaning** - Apply fixes with human-in-the-loop approval
-- **Dataset Versioning** - Track all transformations with immutable versions
-- **Documentation Generation** - Auto-generate dataset cards
+- **Natural Language Transformations** - "remove nulls and sort by date"
+- **Multi-Step Execution** - Complex operations broken into atomic steps
+- **Real-Time Streaming** - Watch steps execute live in the UI
+- **Automatic Retries** - Failed steps retry automatically
+- **Version Control** - Every transformation creates a new version
+- **Data Querying** - Ask questions about your data
+
+## Architecture
+
+```
++-------------------+          +-------------------+          +------------+
+|                   |   HTTP   |                   |   SQL    |            |
+|  Next.js Frontend |<-------->|  FastAPI Backend  |<-------->| PostgreSQL |
+|  (React + SSE)    |          |  (LangGraph)      |          |            |
++-------------------+          +-------------------+          +------------+
+        |                              |
+        |                              |
+        v                              v
++-------------------+          +-------------------+
+|                   |          |                   |
+|  Data Preview     |          |  OpenRouter LLM   |
+|  (Paginated)      |          |  (Llama 3.3 70B)  |
++-------------------+          +-------------------+
+```
+
+## Request Flow
+
+```
+User Message: "remove nulls, drop age column, sort by name"
+                              |
+                              v
+                    +-------------------+
+                    | Intent Classifier |
+                    | (transform/chat)  |
+                    +--------+----------+
+                             |
+              +--------------+--------------+
+              |                             |
+              v                             v
+    +------------------+          +------------------+
+    | LangGraph Planner|          |   Chat Agent     |
+    | (creates steps)  |          | (answers queries)|
+    +--------+---------+          +------------------+
+             |
+             v
+    +------------------+
+    |  Execution Graph |
+    +------------------+
+             |
+    +--------+--------+--------+
+    |        |        |        |
+    v        v        v        v
+ +------+ +------+ +------+ +------+
+ | Plan | | Load | |Execute| |Final-|
+ |      | | Data | | Steps | | ize  |
+ +------+ +------+ +------+ +------+
+                      |
+              +-------+-------+
+              |       |       |
+              v       v       v
+           Step 1  Step 2  Step 3
+           (retry) (retry) (retry)
+              |       |       |
+              v       v       v
+           Validate Validate Validate
+```
+
+## LangGraph Workflow
+
+The transformation workflow uses LangGraph for orchestration:
+
+```
+                         +-------+
+                         | START |
+                         +---+---+
+                             |
+                             v
+                        +----+----+
+                        |  PLAN   |
+                        | (async) |
+                        +----+----+
+                             |
+                             v
+                      +------+------+
+                      | LOAD DATA   |
+                      +------+------+
+                             |
+                             v
+                    +--------+--------+
+                    | CHECK APPROVAL  |
+                    +--------+--------+
+                             |
+              +--------------+--------------+
+              |                             |
+              v                             v
+      [needs approval]              [auto-approve]
+              |                             |
+              v                             v
+        +-----+-----+               +-------+-------+
+        | FINALIZE  |               | EXECUTE STEP  |
+        +-----------+               +-------+-------+
+                                            |
+                                            v
+                                    +-------+-------+
+                                    |   VALIDATE    |
+                                    +-------+-------+
+                                            |
+                          +-----------------+------------------+
+                          |                 |                  |
+                          v                 v                  v
+                      [success]         [failed]          [max retries]
+                          |                 |                  |
+                          v                 v                  v
+                   +------+------+   +------+------+    +------+------+
+                   | Next Step?  |   |    RETRY    |    | Skip Step   |
+                   +------+------+   +-------------+    +------+------+
+                          |                                    |
+              +-----------+-----------+                        |
+              |                       |                        |
+              v                       v                        |
+         [more steps]            [no more]                     |
+              |                       |                        |
+              v                       v                        |
+      CHECK APPROVAL             FINALIZE <--------------------+
+                                     |
+                                     v
+                                  +--+--+
+                                  | END |
+                                  +-----+
+```
 
 ## Project Structure
 
 ```
-├── backend/               # Python API service
-│   ├── agents/           # Data processing agents
-│   ├── api/              # FastAPI endpoints
-│   ├── models/           # Pydantic & SQLAlchemy models
-│   ├── orchestrator/     # Agent coordination (LangGraph)
-│   ├── tests/            # Backend tests
-│   ├── db.py             # Database config
-│   ├── llm.py            # OpenRouter LLM client
-│   ├── main.py           # App entry
-│   ├── requirements.txt
-│   └── Dockerfile
-├── frontend/             # Next.js app
-│   ├── app/              # Pages & layouts
-│   ├── components/       # UI components
-│   │   ├── sidebar.tsx   # Chat history sidebar
-│   │   └── ui/           # shadcn-style components
-│   ├── lib/              # API client
-│   ├── types/            # TypeScript types
-│   └── Dockerfile
-├── storage/
-│   ├── raw/              # Uploaded datasets
-│   └── curated/          # Processed datasets
-├── examples/             # Sample data files
-├── docker-compose.yml
-└── README.md
+dataset-curator/
+|
++-- backend/
+|   +-- agents/
+|   |   +-- data_ops.py        # DataFrame operations (15+ transforms)
+|   |
+|   +-- api/
+|   |   +-- routes.py          # REST + SSE endpoints
+|   |
+|   +-- orchestrator/
+|   |   +-- workflow.py        # LangGraph workflow (unified)
+|   |
+|   +-- models/
+|   |   +-- dataset_state.py   # Pydantic state model
+|   |   +-- db_models.py       # SQLAlchemy models
+|   |
+|   +-- llm.py                 # Intent classification + planning
+|   +-- db.py                  # Database connection
+|   +-- main.py                # FastAPI app
+|
++-- frontend/
+|   +-- app/
+|   |   +-- page.tsx           # Main chat + preview UI
+|   |   +-- globals.css        # Styles
+|   |
+|   +-- components/
+|   |   +-- sidebar.tsx        # Session history
+|   |   +-- ui/                # Reusable components
+|   |
+|   +-- lib/
+|   |   +-- api.ts             # API client + SSE streaming
+|
++-- storage/
+|   +-- raw/                   # Uploaded files
+|   +-- curated/               # Transformed versions
+|
++-- docker-compose.yml
+```
+
+## Available Operations
+
+| Operation | Example | Description |
+|-----------|---------|-------------|
+| `drop_column` | "remove the age column" | Delete a column |
+| `rename_column` | "rename id to user_id" | Rename a column |
+| `drop_nulls` | "remove rows with missing values" | Drop null rows |
+| `fill_nulls` | "fill nulls in age with 0" | Replace nulls |
+| `drop_duplicates` | "remove duplicate rows" | Deduplicate |
+| `filter_rows` | "keep only rows where age > 18" | Filter (keep) |
+| `drop_rows` | "remove rows where status = inactive" | Filter (remove) |
+| `add_column` | "add column country with value USA" | Add static column |
+| `add_conditional_column` | "add difficulty: <30 Hard, 30-60 Medium, >60 Easy" | Add computed column |
+| `convert_type` | "convert age to integer" | Change dtype |
+| `sort` | "sort by date descending" | Sort rows |
+| `replace_values` | "replace NA with Unknown in status" | Find/replace |
+| `lowercase` | "lowercase the name column" | To lowercase |
+| `uppercase` | "uppercase the code column" | To uppercase |
+| `strip_whitespace` | "trim whitespace from all text" | Strip spaces |
+
+## API Endpoints
+
+```
+POST /upload
+     |-- Upload CSV file
+     +-- Returns: preview, row_count, column_count
+
+POST /chat/{dataset_id}
+     |-- Send natural language message
+     +-- Returns: assistant response
+
+POST /chat/{dataset_id}/stream
+     |-- Send message with SSE streaming
+     +-- Returns: real-time step events
+
+GET  /preview/{dataset_id}?page=1&page_size=50
+     |-- Get paginated data preview
+     +-- Returns: data, pagination info
+
+GET  /download/{dataset_id}/file
+     |-- Download processed CSV
+     +-- Returns: file download
+```
+
+## Streaming Events (SSE)
+
+```
+Event: plan
+Data:  { total_steps: 3, steps: ["Remove nulls", "Drop column", "Sort"] }
+
+Event: step_start
+Data:  { step: 1, description: "Remove nulls" }
+
+Event: step_complete
+Data:  { step: 1, success: true, message: "Removed 50 rows", rows_after: 950 }
+
+Event: done
+Data:  { success: true, total_executed: 3, final_message: "..." }
 ```
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- OpenRouter API key
+- Docker and Docker Compose
+- OpenRouter API key (get one at https://openrouter.ai)
 
 ### Setup
 
-1. **Create environment file:**
-   ```bash
-   cat > .env << 'EOF'
-   OPENROUTER_API_KEY=your_openrouter_key_here
-   DATABASE_URL=postgresql+asyncpg://dataset_curator:dataset_curator@localhost:5432/dataset_curator
-   EOF
-   ```
+1. Clone and configure:
+```bash
+git clone <repo>
+cd dataset-curator
 
-2. **Start services:**
-   ```bash
-   docker compose up --build
-   ```
+# Create .env file
+cat > .env << 'EOF'
+OPENROUTER_API_KEY=your_key_here
+DATABASE_URL=postgresql+asyncpg://dataset_curator:dataset_curator@db:5432/dataset_curator
+EOF
+```
 
-3. **Access the app:**
-   - Frontend: http://localhost:3000
-   - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
+2. Start services:
+```bash
+docker compose up --build
+```
 
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/upload` | Upload and process a dataset |
-| GET | `/health/{dataset_id}` | Get quality issues report |
-| POST | `/approve` | Approve and apply fixes |
-| GET | `/download/{dataset_id}/file` | Download processed dataset |
-| POST | `/chat/{dataset_id}` | Send message to AI agent |
-| GET | `/chat/{dataset_id}` | Get chat history |
-| POST | `/analyze/{dataset_id}` | Get AI analysis of dataset |
-| GET | `/card/{dataset_id}` | Get dataset documentation |
+3. Access the app:
+```
+Frontend:  http://localhost:3000
+API:       http://localhost:8000
+API Docs:  http://localhost:8000/docs
+```
 
 ## Development
 
-### Local Backend
+### Backend
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8000
 ```
 
-### Local Frontend
+### Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### Run Tests
+### Tests
 ```bash
 cd backend
 pytest
@@ -106,11 +302,41 @@ pytest
 
 ## Tech Stack
 
-- **Backend:** Python, FastAPI, SQLAlchemy, Pandas
-- **Frontend:** Next.js 14, React, TypeScript
-- **Database:** PostgreSQL
-- **LLM:** OpenRouter (Claude 3.5 Sonnet)
-- **Containerization:** Docker
+```
++------------------+------------------+------------------+
+|     Frontend     |     Backend      |   Infrastructure |
++------------------+------------------+------------------+
+| Next.js 14       | FastAPI          | Docker           |
+| React 18         | LangGraph        | PostgreSQL       |
+| TypeScript       | Pandas           | OpenRouter       |
+| Server-Sent Events| SQLAlchemy      | Llama 3.3 70B    |
++------------------+------------------+------------------+
+```
+
+## Example Usage
+
+```
+User: "Upload sales.csv"
+Bot:  Dataset loaded! 1000 rows, 8 columns.
+
+User: "Remove rows where revenue is null and sort by date descending"
+Bot:  Executing 2 steps:
+      
+      Step 1: Remove rows with null revenue
+        [OK] Removed 45 rows. Now 955 rows.
+      
+      Step 2: Sort by date descending  
+        [OK] Sorted by date (descending)
+      
+      Summary: 2/2 steps completed
+      Result: 955 rows x 8 columns
+
+User: "What's the average revenue?"
+Bot:  The average revenue is $1,234.56 across 955 records.
+
+User: "Download"
+Bot:  [Downloads sales_v2.csv]
+```
 
 ## License
 
