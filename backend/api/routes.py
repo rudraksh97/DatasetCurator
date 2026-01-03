@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Dict, AsyncGenerator
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db import get_session
+from db import get_session, AsyncSessionLocal
 from orchestrator.workflow import (
     Orchestrator,
     execute_transformation,
     execute_transformation_streaming,
     CURATED_STORAGE,
 )
-from llm import classify_intent, chat_with_agent, create_execution_plan
-from agents.data_ops import DataOperator
+from llm import classify_intent, chat_with_agent
+from embeddings import embed_dataset
 
 router = APIRouter()
 orchestrator = Orchestrator()
@@ -79,8 +80,20 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
         }
 
 
+async def _embed_dataset_background(dataset_id: str, file_path: str):
+    """Background task to embed dataset for semantic search."""
+    try:
+        async with AsyncSessionLocal() as session:
+            df = pd.read_csv(file_path)
+            count = await embed_dataset(session, dataset_id, df)
+            print(f"[Upload] Embedded {count} rows for dataset {dataset_id}")
+    except Exception as e:
+        print(f"[Upload] Failed to embed dataset {dataset_id}: {e}")
+
+
 @router.post("/upload")
 async def upload_dataset(
+    background_tasks: BackgroundTasks,
     dataset_id: str = Form(...),
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
@@ -104,6 +117,9 @@ async def upload_dataset(
     column_count = int(len(df.columns))
 
     preview_data = _preview_df(target_path, page=1, page_size=50)
+    
+    # Embed dataset in background for semantic search
+    background_tasks.add_task(_embed_dataset_background, dataset_id, str(target_path))
     
     return {
         "dataset_id": dataset_id,
@@ -248,7 +264,10 @@ async def chat(
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
             data_path = state.curated_path or state.raw_path
             try:
-                response = await chat_with_agent(user_msg, data_path=data_path, context=context, history=history)
+                response = await chat_with_agent(
+                    user_msg, data_path=data_path, context=context, history=history,
+                    session=session, dataset_id=dataset_id
+                )
             except Exception as e:
                 response = f"Error: {str(e)}\n\nTry: *'show data'* or *'remove column X'*"
 
@@ -382,7 +401,10 @@ async def chat_stream(
                 context = {"columns": columns}
                 history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
                 data_path = state.curated_path or state.raw_path
-                response = await chat_with_agent(user_msg, data_path=data_path, context=context, history=history)
+                response = await chat_with_agent(
+                    user_msg, data_path=data_path, context=context, history=history,
+                    session=session, dataset_id=dataset_id
+                )
             else:
                 response = "**Welcome!** Upload a CSV to get started."
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
 
@@ -500,16 +503,26 @@ async def classify_intent(
     return {"intent": "chat", "params": {}, "explanation": "Could not classify intent"}
 
 
-def _load_dataframe(data_path: Optional[str]) -> Optional[pd.DataFrame]:
-    """Load DataFrame from path."""
+def _load_dataframe(data_path: Optional[str], max_rows: Optional[int] = None, sample: bool = False) -> Optional[pd.DataFrame]:
+    """Load DataFrame from path with smart handling for large files."""
     if not data_path:
         return None
     try:
+        from data_loader import load_dataframe_smart
         path = Path(data_path)
         if path.exists():
-            return pd.read_csv(path)
-    except Exception:
-        pass
+            return load_dataframe_smart(path, max_rows=max_rows, sample=sample)
+    except Exception as e:
+        print(f"[LLM] Error loading dataframe: {e}")
+        # Fallback to basic loading
+        try:
+            path = Path(data_path)
+            if path.exists():
+                if max_rows:
+                    return pd.read_csv(path, nrows=max_rows)
+                return pd.read_csv(path)
+        except Exception:
+            pass
     return None
 
 
@@ -803,17 +816,329 @@ def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[st
         return {"success": False, "error": str(e)}
 
 
+async def _interpret_and_execute_query(
+    df: Optional[pd.DataFrame],
+    user_message: str,
+    columns: List[str],
+    data_path: Optional[str] = None,
+) -> str:
+    """Use LLM to interpret the query and execute it efficiently (handles large datasets)."""
+    from data_loader import (
+        is_large_dataset,
+        count_rows_chunked,
+        calculate_stat_chunked,
+        group_count_chunked,
+        get_random_sample_chunked,
+    )
+    
+    # Check if dataset is large
+    is_large = False
+    if data_path:
+        path = Path(data_path)
+        is_large, _ = is_large_dataset(path)
+    
+    row_count = len(df) if df is not None else 0
+    
+    # Ask LLM to generate a simple query plan
+    plan_prompt = f"""Given this user question about a dataset, output a JSON query plan.
+
+Dataset columns: {', '.join(columns)}
+Dataset has {row_count} rows.
+
+User question: {user_message}
+
+Output ONLY valid JSON with one of these formats:
+
+1. For counts/how many: {{"type": "count", "column": "col_name", "value": "filter_value"}}
+2. For statistics (mean/avg/sum/min/max): {{"type": "stat", "stat": "mean|sum|min|max", "column": "col_name"}}
+3. For group counts: {{"type": "group_count", "column": "col_name"}}
+4. For random sample: {{"type": "random", "column": "col_name", "value": "optional_filter"}}
+5. For search: {{"type": "search", "column": "col_name", "value": "search_term"}}
+6. For general info: {{"type": "info"}}
+
+Examples:
+- "how many hard problems" -> {{"type": "count", "column": "Difficulty Level", "value": "Hard"}}
+- "mean of success rate" -> {{"type": "stat", "stat": "mean", "column": "Success Rate"}}
+- "give me any hard problem" -> {{"type": "random", "column": "Difficulty Level", "value": "Hard"}}
+- "breakdown by difficulty" -> {{"type": "group_count", "column": "Difficulty Level"}}"""
+
+    messages = [{"role": "user", "content": plan_prompt}]
+    
+    try:
+        plan_response = await chat_completion(messages, temperature=0, max_tokens=200)
+        plan = _parse_json_response(plan_response)
+        
+        if not plan:
+            return None
+            
+        query_type = plan.get("type", "info")
+        column = plan.get("column")
+        value = plan.get("value")
+        stat = plan.get("stat")
+        
+        # Find the actual column name (case-insensitive)
+        if column:
+            for c in columns:
+                if c.lower() == column.lower():
+                    column = c
+                    break
+        
+        # Execute the query - use chunked operations for large datasets
+        if query_type == "count" and column and value:
+            if is_large and data_path:
+                count = count_rows_chunked(Path(data_path), column, value)
+            elif df is not None:
+                count = len(df[df[column].astype(str).str.lower() == str(value).lower()])
+            else:
+                return None
+            return f"COUNT: There are **{count}** rows where {column} = '{value}'"
+            
+        elif query_type == "stat" and column:
+            if is_large and data_path:
+                result = calculate_stat_chunked(Path(data_path), column, stat or "mean")
+            elif df is not None:
+                if column in df.columns and pd.api.types.is_numeric_dtype(df[column]):
+                    if stat == "mean":
+                        result = df[column].mean()
+                    elif stat == "sum":
+                        result = df[column].sum()
+                    elif stat == "min":
+                        result = df[column].min()
+                    elif stat == "max":
+                        result = df[column].max()
+                    else:
+                        result = df[column].mean()
+                else:
+                    return f"ERROR: Column '{column}' is not numeric"
+            else:
+                return None
+            
+            if result is not None:
+                return f"STATISTIC: The {stat or 'mean'} of {column} is **{result:.2f}**"
+            else:
+                return f"ERROR: Could not calculate {stat} for {column}"
+                
+        elif query_type == "group_count" and column:
+            if is_large and data_path:
+                counts = group_count_chunked(Path(data_path), column)
+            elif df is not None:
+                if column in df.columns:
+                    counts = df[column].value_counts().to_dict()
+                else:
+                    return None
+            else:
+                return None
+            
+            result_str = "\n".join([f"- {k}: {v}" for k, v in counts.items()])
+            return f"GROUP COUNT by {column}:\n{result_str}"
+                
+        elif query_type == "random":
+            if is_large and data_path:
+                sample_df = get_random_sample_chunked(Path(data_path), column, value, n=1)
+                if len(sample_df) > 0:
+                    sample = sample_df.iloc[0]
+                else:
+                    return f"No rows found where {column} = '{value}'" if column and value else "No data available"
+            elif df is not None:
+                if column and value:
+                    filtered = df[df[column].astype(str).str.lower() == str(value).lower()]
+                    if len(filtered) > 0:
+                        sample = filtered.sample(n=1).iloc[0]
+                    else:
+                        return f"No rows found where {column} = '{value}'"
+                else:
+                    sample = df.sample(n=1).iloc[0]
+            else:
+                return None
+            
+            return f"RANDOM SAMPLE:\n{sample.to_dict()}"
+            
+        elif query_type == "search" and column and value:
+            # For search, we need to load some data - use sampling for large files
+            search_df = df if df is not None else _load_dataframe(data_path, max_rows=10000, sample=True)
+            if search_df is not None and column in search_df.columns:
+                matches = search_df[search_df[column].astype(str).str.lower().str.contains(str(value).lower(), na=False)]
+                if len(matches) > 0:
+                    results = matches.head(5)[column].tolist()
+                    note = " (showing results from sample)" if is_large else ""
+                    return f"SEARCH RESULTS for '{value}' in {column}{note}:\n" + "\n".join([f"- {r}" for r in results])
+                else:
+                    return f"No matches found for '{value}' in {column}"
+            else:
+                return f"ERROR: Column '{column}' not found"
+                    
+        elif query_type == "info":
+            info_note = " (large dataset - using estimates)" if is_large else ""
+            return f"DATASET INFO{info_note}: {row_count} rows, {len(columns)} columns\nColumns: {', '.join(columns)}"
+            
+    except Exception as e:
+        print(f"[Chat] Query interpretation failed: {e}")
+    
+    return None
+
+
+async def _chat_without_tools(
+    df: Optional[pd.DataFrame],
+    user_message: str,
+    context: Optional[Dict[str, Any]] = None,
+    session: Optional["AsyncSession"] = None,
+    dataset_id: Optional[str] = None,
+    data_path: Optional[str] = None,
+) -> str:
+    """Fallback chat without function calling - uses LLM to interpret and execute queries."""
+    columns = context.get("columns", []) if context else (list(df.columns) if df is not None else [])
+    
+    # Get basic stats
+    stats = {
+        "rows": len(df) if df is not None else 0,
+        "columns": len(df.columns) if df is not None else len(columns),
+        "column_names": columns[:15],
+    }
+    
+    query_results = ""
+    
+    # First, try to interpret and execute the query using LLM
+    executed_result = await _interpret_and_execute_query(df, user_message, columns, data_path)
+    if executed_result:
+        query_results = executed_result
+    
+    # If no direct execution, try semantic search
+    if not query_results and session and dataset_id:
+        try:
+            from embeddings import semantic_search, has_embeddings
+            if await has_embeddings(session, dataset_id):
+                print(f"[Chat] Using semantic search for: {user_message[:50]}...")
+                results = await semantic_search(session, dataset_id, user_message, limit=5)
+                if results:
+                    query_results = "SEMANTICALLY RELEVANT RESULTS:\n"
+                    for i, r in enumerate(results, 1):
+                        similarity = r["similarity"]
+                        metadata = r.get("metadata", {})
+                        title = metadata.get("Question Title", metadata.get("title", "Unknown"))
+                        query_results += f"{i}. **{title}** (similarity: {similarity:.2f})\n"
+                        query_results += f"   {r['content'][:300]}...\n\n"
+        except Exception as e:
+            print(f"[Chat] Semantic search failed: {e}")
+    
+    # Default: show sample data
+    if not query_results:
+        if df is not None and len(df) > 0:
+            sample_rows = df.head(3).to_dict(orient="records")
+            query_results = "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
+        elif data_path:
+            # Load a small sample for display
+            sample_df = _load_dataframe(data_path, max_rows=3)
+            if sample_df is not None and len(sample_df) > 0:
+                sample_rows = sample_df.to_dict(orient="records")
+                query_results = "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
+            else:
+                query_results = "DATASET INFO: Large dataset - queries will be processed efficiently using chunked operations."
+        else:
+            query_results = "DATASET INFO: No data available."
+    
+    system_prompt = f"""You are the Dataset Curator assistant. Answer the user's question using ONLY the data provided below.
+
+Dataset info: {stats['rows']} rows, {stats['columns']} columns
+Columns: {', '.join(stats['column_names'])}
+
+QUERY RESULTS:
+{query_results}
+
+RULES:
+1. Use ONLY the data shown above
+2. Be direct and concise
+3. Format numbers nicely"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+    
+    return await chat_completion(messages, temperature=0.3)
+
+
+async def _classify_query_type(user_message: str, columns: List[str]) -> str:
+    """Use LLM to classify if query is about the dataset or general conversation."""
+    
+    columns_str = ", ".join(columns[:15]) if columns else "unknown"
+    
+    system_prompt = f"""You are a query classifier. Determine if the user's message is:
+1. "data" - A question or request about the loaded dataset (wants to query, search, filter, get statistics, find records, etc.)
+2. "general" - General conversation, greetings, thanks, questions about you, or unrelated topics
+
+The user has a dataset loaded with columns: {columns_str}
+
+Respond with ONLY "data" or "general" - nothing else.
+
+Examples:
+- "How are you?" → general
+- "Hello" → general
+- "Thanks!" → general
+- "What can you do?" → general
+- "Give me any hard problem" → data
+- "Find similar questions for two sum" → data
+- "How many rows are there?" → data
+- "Show me a random record" → data
+- "What is the average success rate?" → data
+- "List all columns" → data
+- "What is this data about?" → data
+- "Filter by difficulty" → data"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+    
+    try:
+        response = await chat_completion(messages, temperature=0, max_tokens=10)
+        result = response.strip().lower()
+        return "data" if "data" in result else "general"
+    except Exception as e:
+        print(f"[Chat] Query classification error: {e}, defaulting to data")
+        return "data"  # Default to data query if classification fails
+
+
 async def chat_with_agent(
     user_message: str,
     data_path: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
     history: Optional[List[Dict[str, str]]] = None,
+    session: Optional["AsyncSession"] = None,
+    dataset_id: Optional[str] = None,
 ) -> str:
     """Chat with the dataset curator agent - answers questions about data using function calling."""
     
-    df = _load_dataframe(data_path)
-    system_prompt = _build_chat_system_prompt(context.get("columns") if context else None)
-
+    # Load dataframe - use sampling for large datasets
+    from data_loader import is_large_dataset
+    is_large = False
+    if data_path:
+        path = Path(data_path)
+        is_large, _ = is_large_dataset(path)
+    
+    # For large datasets, only load a sample (chunked operations will handle full queries)
+    df = _load_dataframe(data_path, max_rows=10000 if is_large else None, sample=is_large)
+    columns = context.get("columns", []) if context else []
+    if df is not None and not columns:
+        columns = list(df.columns)
+    
+    # Use LLM to determine if this is a data query or general conversation
+    query_type = await _classify_query_type(user_message, columns)
+    print(f"[Chat] Query: {user_message[:50]}... | Type: {query_type}")
+    
+    # For general conversation, respond without function calling
+    if query_type == "general":
+        general_prompt = """You are the Dataset Curator assistant, a friendly AI that helps users work with datasets.
+You're currently helping a user who has data loaded. Be conversational and helpful.
+If they ask what you can do, mention: searching data, getting statistics, finding specific records, filtering, etc."""
+        
+        messages: List[Message] = [{"role": "system", "content": general_prompt}]
+        if history:
+            messages.extend(history[-4:])  # Limited history for general chat
+        messages.append({"role": "user", "content": user_message})
+        return await chat_completion(messages, temperature=0.7)
+    
+    # For data queries, use function calling
+    system_prompt = _build_chat_system_prompt(columns)
     messages: List[Message] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
@@ -835,6 +1160,11 @@ async def chat_with_agent(
             
             message = response.choices[0].message
             print(f"[Chat] Initial response: content={repr(message.content)}, tool_calls={message.tool_calls}")
+            
+            # If LLM returned empty and no tool calls, retry without tools
+            if not message.content and not message.tool_calls:
+                print("[Chat] Empty response with no tools, retrying without function calling...")
+                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
             
             max_iterations = 10  # Prevent infinite loops
             iteration = 0
@@ -877,9 +1207,9 @@ async def chat_with_agent(
             if message.content:
                 return message.content
             else:
-                # If no content but we processed functions, summarize the results
-                print(f"[Chat] No content in final message, message={message}")
-                return "I retrieved the data but couldn't generate a response. Please try rephrasing your question."
+                # If no content after function calls, fallback to non-tool response
+                print(f"[Chat] No content after tool calls, falling back...")
+                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
                 
         except Exception as e:
             error_str = str(e)

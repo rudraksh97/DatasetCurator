@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import AsyncIterator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -28,4 +29,11 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+async def init_pgvector():
+    """Initialize pgvector extension."""
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.commit()
 

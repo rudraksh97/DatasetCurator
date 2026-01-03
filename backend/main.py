@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router as api_router
-from db import Base, engine
+from db import Base, engine, init_pgvector
 from models import db_models  # noqa: F401  # ensure models are imported for metadata
 
 app = FastAPI(title="Agentic Dataset Curator")
@@ -30,6 +30,9 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup() -> None:
+    # Initialize pgvector extension
+    await init_pgvector()
+    # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
