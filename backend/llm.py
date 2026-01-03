@@ -608,36 +608,10 @@ Be accurate and cite the actual data values you retrieve."""
     
     if not df is None:
         # Use function calling
-        client = get_client()
-        response = await client.chat.completions.create(
-            model=DEFAULT_MODEL,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.7,
-            max_tokens=2048,
-            stream=False,  # Function calling requires non-streaming mode
-        )
-        
-        message = response.choices[0].message
-        
-        # Handle function calls
-        while message.tool_calls:
-            messages.append(message)
-            
-            # Execute function calls
-            for tool_call in message.tool_calls:
-                function_name = tool_call.function.name
-                arguments = json.loads(tool_call.function.arguments)
-                result = _execute_data_query(df, function_name, arguments)
-                
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result)
-                })
-            
-            # Get next response
+        try:
+            client = get_client()
+            # Function calling requires non-streaming mode - explicitly set to False
+            # Some providers may ignore this, so we catch the error
             response = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
@@ -645,11 +619,52 @@ Be accurate and cite the actual data values you retrieve."""
                 tool_choice="auto",
                 temperature=0.7,
                 max_tokens=2048,
-                stream=False,  # Function calling requires non-streaming mode
+                stream=False,
             )
+            
             message = response.choices[0].message
-        
-        return message.content or "I couldn't process your request."
+            
+            # Handle function calls
+            while message.tool_calls:
+                messages.append(message)
+                
+                # Execute function calls
+                for tool_call in message.tool_calls:
+                    function_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments)
+                    result = _execute_data_query(df, function_name, arguments)
+                    
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result)
+                    })
+                
+                # Get next response
+                response = await client.chat.completions.create(
+                    model=DEFAULT_MODEL,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.7,
+                    max_tokens=2048,
+                    stream=False,
+                )
+                message = response.choices[0].message
+            
+            return message.content or "I couldn't process your request."
+        except Exception as e:
+            error_str = str(e)
+            # If streaming mode error, the model might not support function calling
+            if "streaming mode" in error_str.lower() or "tools are not supported" in error_str.lower():
+                # Fallback: try without tools but with data context
+                context_info = f"\n\nDataset has {len(df)} rows and {len(df.columns)} columns: {', '.join(df.columns.tolist()[:10])}"
+                if len(df.columns) > 10:
+                    context_info += f" and {len(df.columns) - 10} more."
+                
+                fallback_messages = messages + [{"role": "user", "content": user_message + context_info}]
+                return await chat_completion(fallback_messages, temperature=0.7)
+            raise
     else:
         # No data available, use regular chat
         return await chat_completion(messages, temperature=0.7)
