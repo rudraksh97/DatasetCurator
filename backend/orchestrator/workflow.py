@@ -3,58 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agents.cleaning_agent import CleaningAgent
-from agents.documentation_agent import DocumentationAgent
-from agents.ingestion import IngestionAgent
-from agents.quality_agent import DataQualityAgent
-from agents.schema_agent import SchemaUnderstandingAgent
-from agents.versioning_agent import VersioningAgent
 from models.dataset_state import DatasetState
 from models.db_models import DatasetRecord
 
 
 class Orchestrator:
-    def __init__(self) -> None:
-        self.ingestion_agent = IngestionAgent()
-        self.schema_agent = SchemaUnderstandingAgent()
-        self.quality_agent = DataQualityAgent()
-        self.cleaning_agent = CleaningAgent()
-        self.documentation_agent = DocumentationAgent()
-        self.versioning_agent = VersioningAgent()
+    """Simplified orchestrator for dataset processing."""
 
-    async def ingest(self, session: AsyncSession, dataset_id: str, source_path: Path) -> DatasetState:
-        # source_path is expected to be an on-disk file (may be uploaded already).
-        state = self.ingestion_agent.ingest_uploaded(uploaded_path=source_path, dataset_id=dataset_id)
-        state = await self._upsert_state(session, state)
-        return state
-
-    async def analyze_schema(self, session: AsyncSession, dataset_id: str) -> DatasetState:
-        state = await self._get_state(session, dataset_id)
-        state = self.schema_agent.analyze(state)
-        state = await self._upsert_state(session, state)
-        return state
-
-    async def analyze_quality(self, session: AsyncSession, dataset_id: str) -> DatasetState:
-        state = await self._get_state(session, dataset_id)
-        state = self.quality_agent.analyze(state)
-        state = await self._upsert_state(session, state)
-        return state
-
-    async def apply_approved_fixes(
-        self,
-        session: AsyncSession,
-        dataset_id: str,
-        approved_fixes: Optional[List[Dict]] = None,
-    ) -> DatasetState:
-        state = await self._get_state(session, dataset_id)
-        fixes = approved_fixes or state.approved_fixes
-        state = self.cleaning_agent.apply_fixes(state, fixes)
-        state = self.versioning_agent.create_version(state)
-        state = self.documentation_agent.generate(state)
-        state = await self._upsert_state(session, state)
-        return state
+    def __init__(self, raw_storage: Path = Path("storage/raw"), curated_storage: Path = Path("storage/curated")) -> None:
+        self.raw_storage = raw_storage
+        self.curated_storage = curated_storage
+        self.raw_storage.mkdir(parents=True, exist_ok=True)
+        self.curated_storage.mkdir(parents=True, exist_ok=True)
 
     async def run_pipeline(
         self,
@@ -63,23 +26,50 @@ class Orchestrator:
         source_path: Path,
         approved_fixes: Optional[List[Dict]] = None,
     ) -> DatasetState:
-        state = await self.ingest(session, dataset_id, source_path)
-        state = await self.analyze_schema(session, dataset_id)
-        state = await self.analyze_quality(session, dataset_id)
-        if approved_fixes is not None:
-            state = await self.apply_approved_fixes(session, dataset_id, approved_fixes)
+        """Run the full pipeline: ingest, analyze schema, check quality, create curated version."""
+        
+        # 1. Create initial state
+        state = DatasetState(dataset_id=dataset_id, raw_path=str(source_path))
+        
+        # 2. Read and analyze the data
+        try:
+            df = pd.read_csv(source_path, nrows=2000)
+            
+            # Infer schema
+            state.schema = {col: str(dtype) for col, dtype in df.dtypes.items()}
+            
+            # Check quality issues (columns with >20% missing values)
+            issues: List[Dict[str, object]] = []
+            for col in df.columns:
+                missing_ratio = df[col].isna().mean()
+                if missing_ratio > 0.2:
+                    issues.append({
+                        "column": col,
+                        "issue": f"{missing_ratio:.0%} missing values",
+                        "severity": "high" if missing_ratio > 0.5 else "medium",
+                    })
+            state.quality_issues = issues
+            
+        except Exception as e:
+            state.quality_issues = [{"column": "N/A", "issue": f"Error reading file: {str(e)}", "severity": "high"}]
+
+        # 3. Create curated copy
+        curated_path = self.curated_storage / f"{dataset_id}_v1.csv"
+        try:
+            df_full = pd.read_csv(source_path)
+            df_full.to_csv(curated_path, index=False)
+            state.curated_path = str(curated_path)
+            state.current_version = 1
+        except Exception:
+            state.curated_path = None
+
+        # 4. Save to database
+        state = await self._upsert_state(session, state)
         return state
 
     async def health_report(self, session: AsyncSession, dataset_id: str) -> List[Dict[str, object]]:
         state = await self._get_state(session, dataset_id)
         return state.quality_issues
-
-    async def get_dataset_card(self, session: AsyncSession, dataset_id: str) -> Dict[str, object]:
-        state = await self._get_state(session, dataset_id)
-        if not state.dataset_card:
-            state = self.documentation_agent.generate(state)
-            state = await self._upsert_state(session, state)
-        return state.dataset_card or {}
 
     async def _get_state(self, session: AsyncSession, dataset_id: str) -> DatasetState:
         record = await session.get(DatasetRecord, dataset_id)
@@ -99,4 +89,3 @@ class Orchestrator:
         await session.commit()
         await session.refresh(record)
         return DatasetState.from_record(record)
-

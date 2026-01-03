@@ -81,7 +81,8 @@ body {
   flex: 1;
   gap: 0;
   padding: 24px;
-  min-height: 100vh;
+  height: 100vh;
+  max-height: 100vh;
   overflow: hidden;
 }
 
@@ -344,6 +345,8 @@ body {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
   min-height: 0;
   overflow: hidden;
   box-shadow: var(--shadow-sm);
@@ -459,53 +462,136 @@ body {
   color: var(--text-primary);
 }
 
+.message-text table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 12px 0;
+  overflow-x: auto;
+  display: block;
+}
+
+.message-text table th,
+.message-text table td {
+  padding: 8px 12px;
+  text-align: left;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.message-text table th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.message-text table tr:hover td {
+  background: var(--bg-tertiary);
+}
+
+.message-text code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: "SF Mono", Monaco, monospace;
+}
+
+.message-text pre {
+  background: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+.message-text pre code {
+  background: transparent;
+  padding: 0;
+}
+
 /* Chat Input Area */
 .chat-input-area {
   padding: 16px 24px 24px;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border-light);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.upload-controls {
-  display: flex;
-  gap: 10px;
-}
-
-.upload-controls input[type="text"] {
-  flex: 1;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 10px;
-}
-
-.action-buttons button {
-  flex: 1;
 }
 
 .message-form {
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  align-items: center;
 }
 
 .message-form input {
   flex: 1;
 }
 
+.attach-button,
+.download-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.attach-button:hover,
+.download-button:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.attach-button:disabled,
+.download-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attach-button svg,
+.download-button svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* Data Panel */
 .data-panel {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 0 8px 24px 0;
-  overflow: visible;
+  gap: 16px;
+  padding: 0 8px 0 0;
+  overflow: hidden;
   background: transparent;
+  height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
   min-height: 0;
-  width: 100%;
+}
+
+.data-panel > .card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.data-panel > .card:first-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.data-panel > .card:last-child:not(:first-child) {
+  flex: 0 0 auto;
+  max-height: 200px;
 }
 
 .data-header {
@@ -531,10 +617,11 @@ body {
 }
 
 .table-scroll {
-  max-height: 500px;
+  flex: 1;
   overflow: auto;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
+  min-height: 0;
 }
 
 .issues-scroll {

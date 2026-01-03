@@ -17,6 +17,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://dataset_curator:dataset_curator@db:5432/dataset_curator
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      BING_SEARCH_API_KEY: ${BING_SEARCH_API_KEY}
     ports:
       - "8000:8000"
     volumes:

@@ -19,39 +19,8 @@ export async function uploadDataset(datasetId: string, file: File) {
   return handle(res);
 }
 
-export async function getHealth(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/health/${datasetId}`);
-  return handle(res);
-}
-
-export async function approveFixes(datasetId: string, fixes: Array<Record<string, unknown>>) {
-  const res = await fetch(`${BASE_URL}/approve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataset_id: datasetId, fixes }),
-  });
-  return handle(res);
-}
-
-export async function getCard(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/card/${datasetId}`);
-  return handle(res);
-}
-
-export async function downloadCurated(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/download/${datasetId}`);
-  return handle(res);
-}
-
 export function downloadCuratedFile(datasetId: string) {
-  // Trigger browser download
   window.location.href = `${BASE_URL}/download/${datasetId}/file`;
-}
-
-export async function getChatHistory(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/chat/${datasetId}`);
-  if (res.status === 404) return [];
-  return handle<Array<{ role: string; content: string; timestamp: string }>>(res);
 }
 
 export async function sendChatMessage(datasetId: string, content: string) {
@@ -60,12 +29,11 @@ export async function sendChatMessage(datasetId: string, content: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
   });
-  return handle<{ user_message: string; assistant_message: string; history: Array<any> }>(res);
+  return handle<{ user_message: string; assistant_message: string }>(res);
 }
 
-export async function analyzeDataset(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/analyze/${datasetId}`, {
-    method: "POST",
-  });
-  return handle<{ dataset_id: string; analysis: string }>(res);
+export async function getPreview(datasetId: string) {
+  const res = await fetch(`${BASE_URL}/preview/${datasetId}`);
+  if (res.status === 404) return null;
+  return handle<{ dataset_id: string; preview: Array<Record<string, any>>; quality_issues: Array<any> }>(res);
 }
