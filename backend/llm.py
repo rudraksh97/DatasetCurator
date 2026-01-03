@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
@@ -54,8 +57,6 @@ def _parse_json_response(response: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-QUICK_DATASETS = ["iris", "titanic", "tips", "mpg", "penguins", "diamonds", "flights", "gapminder"]
-
 DATA_OPERATIONS = [
     "drop_column", "rename_column", "drop_nulls", "fill_nulls", "drop_duplicates",
     "filter_rows", "drop_rows", "add_column", "add_conditional_column",
@@ -91,11 +92,9 @@ Classify the user's message into ONE of these intents:
 
 1. "search_datasets" - User wants to FIND/SEARCH for new datasets
 2. "select_result" - User selecting from search results (e.g., "1", "use 2", "load 3")
-3. "fetch_dataset" - User wants a specific quick-access dataset (fetch titanic, get iris)
-4. "list_datasets" - User wants to see available datasets
-5. "show_data" - User wants to preview current data
-6. "transform_data" - User gives a COMMAND to MODIFY data (remove, delete, drop, add, rename, filter)
-7. "chat" - QUESTIONS about data OR general conversation (are there, how many, what, check, tell me, do I have)
+3. "show_data" - User wants to preview current data
+4. "transform_data" - User gives a COMMAND to MODIFY data (remove, delete, drop, add, rename, filter)
+5. "chat" - QUESTIONS about data OR general conversation (are there, how many, what, check, tell me, do I have)
 
 CRITICAL DISTINCTION:
 - "are there any nulls?" → chat (asking a QUESTION)
@@ -107,7 +106,6 @@ CRITICAL DISTINCTION:
 - "check for duplicates" → chat (QUESTION - they want to know, not delete)
 - "remove duplicates" → transform_data (COMMAND)
 
-Quick-access datasets: {QUICK_DATASETS}
 User has data: {has_data}
 Has search results: {has_search_results}{columns_info}
 
@@ -116,7 +114,6 @@ Respond with ONLY valid JSON:
 
 "select_result" params MUST look like: {{"selection": 4}} (integer)
 "search_datasets": {{"query": "term"}}
-"fetch_dataset": {{"dataset_name": "name"}}
 "transform_data": {{"operation": "op_name", ...}}
 
 Examples:
@@ -125,7 +122,6 @@ Examples:
 - "option five please" -> {{"intent": "select_result", "params": {{"selection": 5}}, "explanation": "User picked result #5"}}
 - "use the second one" -> {{"intent": "select_result", "params": {{"selection": 2}}, "explanation": "User selected option 2"}}
 - "find datasets about weather" -> {{"intent": "search_datasets", "params": {{"query": "weather"}}, "explanation": "Search for weather datasets"}}
-- "fetch titanic" -> {{"intent": "fetch_dataset", "params": {{"dataset_name": "titanic"}}, "explanation": "Get titanic dataset"}}
 - "show data" -> {{"intent": "show_data", "params": {{}}, "explanation": "Preview data"}}
 - "remove age column" -> {{"intent": "transform_data", "params": {{"operation": "drop_column", "column": "age"}}, "explanation": "Remove age"}}
 
@@ -201,37 +197,319 @@ ONLY respond with JSON."""
     return {"intent": "chat", "params": {}, "explanation": "Could not classify intent"}
 
 
+def _load_dataframe(data_path: Optional[str]) -> Optional[pd.DataFrame]:
+    """Load DataFrame from path."""
+    if not data_path:
+        return None
+    try:
+        path = Path(data_path)
+        if path.exists():
+            return pd.read_csv(path)
+    except Exception:
+        pass
+    return None
+
+
+def _convert_to_native_type(value: Any) -> Any:
+    """Convert numpy/pandas types to native Python types for JSON serialization."""
+    if pd.isna(value):
+        return None
+    if isinstance(value, (np.integer, pd.Int64Dtype)):
+        return int(value)
+    if isinstance(value, (np.floating, pd.Float64Dtype)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, pd.Series):
+        return value.tolist()
+    if isinstance(value, (dict, list)):
+        # Recursively convert nested structures
+        if isinstance(value, dict):
+            return {k: _convert_to_native_type(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [_convert_to_native_type(v) for v in value]
+    return value
+
+
+def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a data query function on the DataFrame."""
+    try:
+        if function_name == "get_row":
+            # Get a row matching conditions
+            column = arguments.get("column")
+            value = arguments.get("value")
+            if column and value:
+                # Try type conversion
+                try:
+                    if pd.api.types.is_integer_dtype(df[column].dtype):
+                        value = int(value)
+                    elif pd.api.types.is_float_dtype(df[column].dtype):
+                        value = float(value)
+                except (ValueError, TypeError):
+                    pass
+                
+                matches = df[df[column] == value]
+                if len(matches) > 0:
+                    row_data = matches.iloc[0].to_dict()
+                    # Convert all values to native types
+                    row_data = {k: _convert_to_native_type(v) for k, v in row_data.items()}
+                    return {"success": True, "data": row_data, "row_count": int(len(matches))}
+                return {"success": False, "error": f"No rows found where {column} == {value}"}
+            return {"success": False, "error": "Missing column or value"}
+        
+        elif function_name == "get_value":
+            # Get a specific value from a row
+            column = arguments.get("column")
+            filter_column = arguments.get("filter_column")
+            filter_value = arguments.get("filter_value")
+            if column and filter_column and filter_value:
+                # Try type conversion
+                try:
+                    if pd.api.types.is_integer_dtype(df[filter_column].dtype):
+                        filter_value = int(filter_value)
+                    elif pd.api.types.is_float_dtype(df[filter_column].dtype):
+                        filter_value = float(filter_value)
+                except (ValueError, TypeError):
+                    pass
+                
+                matches = df[df[filter_column] == filter_value]
+                if len(matches) > 0:
+                    value = matches.iloc[0][column]
+                    value = _convert_to_native_type(value)
+                    return {"success": True, "value": value, "row_count": int(len(matches))}
+                return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
+            return {"success": False, "error": "Missing required parameters"}
+        
+        elif function_name == "calculate_ratio":
+            # Calculate ratio between two columns
+            numerator_col = arguments.get("numerator_column")
+            denominator_col = arguments.get("denominator_column")
+            filter_column = arguments.get("filter_column")
+            filter_value = arguments.get("filter_value")
+            
+            if numerator_col and denominator_col:
+                if filter_column and filter_value:
+                    # Filter first
+                    try:
+                        if pd.api.types.is_integer_dtype(df[filter_column].dtype):
+                            filter_value = int(filter_value)
+                        elif pd.api.types.is_float_dtype(df[filter_column].dtype):
+                            filter_value = float(filter_value)
+                    except (ValueError, TypeError):
+                        pass
+                    matches = df[df[filter_column] == filter_value]
+                    if len(matches) == 0:
+                        return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
+                    df_subset = matches
+                else:
+                    df_subset = df
+                
+                numerator = df_subset[numerator_col].sum()
+                denominator = df_subset[denominator_col].sum()
+                if denominator == 0:
+                    return {"success": False, "error": "Denominator is zero"}
+                ratio = numerator / denominator
+                return {
+                    "success": True,
+                    "numerator": _convert_to_native_type(numerator),
+                    "denominator": _convert_to_native_type(denominator),
+                    "ratio": _convert_to_native_type(ratio),
+                    "row_count": int(len(df_subset))
+                }
+            return {"success": False, "error": "Missing numerator or denominator column"}
+        
+        elif function_name == "get_statistics":
+            # Get basic statistics
+            column = arguments.get("column")
+            if column:
+                if column not in df.columns:
+                    return {"success": False, "error": f"Column '{column}' not found"}
+                stats = {
+                    "count": _convert_to_native_type(df[column].count()),
+                    "nulls": _convert_to_native_type(df[column].isna().sum()),
+                    "mean": _convert_to_native_type(df[column].mean()) if pd.api.types.is_numeric_dtype(df[column]) else None,
+                    "min": _convert_to_native_type(df[column].min()) if pd.api.types.is_numeric_dtype(df[column]) else None,
+                    "max": _convert_to_native_type(df[column].max()) if pd.api.types.is_numeric_dtype(df[column]) else None,
+                }
+                return {"success": True, "statistics": stats}
+            return {"success": False, "error": "Missing column parameter"}
+        
+        elif function_name == "list_columns":
+            return {"success": True, "columns": list(df.columns), "row_count": int(len(df))}
+        
+        elif function_name == "get_row_count":
+            return {"success": True, "row_count": int(len(df)), "column_count": int(len(df.columns))}
+        
+        return {"success": False, "error": f"Unknown function: {function_name}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 async def chat_with_agent(
     user_message: str,
+    data_path: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
-    """Chat with the dataset curator agent - answers questions about data."""
-    system_prompt = """You are the Dataset Curator, an AI that helps with datasets.
+    """Chat with the dataset curator agent - answers questions about data using function calling."""
+    
+    df = _load_dataframe(data_path)
+    
+    system_prompt = """You are the Dataset Curator, an AI that helps answer questions about datasets.
 
-When users ask QUESTIONS about their data, analyze and answer:
-- "are there any nulls?" → Check and report null counts per column
-- "how many rows?" → Report row count
-- "what columns?" → List the columns
-- "any duplicates?" → Check and report duplicate counts
-- "describe the data" → Give summary statistics
+IMPORTANT: When users ask questions about the data, you MUST use the provided functions to query the actual dataset.
+DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
 
-Use the context provided to answer accurately. Be helpful and informative.
-Use markdown for formatting. If you need more info, ask."""
+Available functions:
+- get_row: Get a row matching a condition (column == value)
+- get_value: Get a specific value from a row (filter by one column, get another column's value)
+- calculate_ratio: Calculate ratio between two columns (optionally filtered)
+- get_statistics: Get statistics for a column (count, nulls, mean, min, max)
+- list_columns: List all columns in the dataset
+- get_row_count: Get total row and column count
+
+When answering questions:
+1. First, understand what data is needed
+2. Call the appropriate function(s) to get the actual data
+3. Use the returned values in your answer
+4. Show your calculations if doing math
+
+Be accurate and cite the actual data values you retrieve."""
 
     if context:
         cols = context.get('columns', [])
-        issues = context.get('issues', [])
-        system_prompt += f"""
+        if cols:
+            system_prompt += f"\n\nAvailable columns: {', '.join(cols)}"
 
-DATA CONTEXT:
-- Columns: {cols}
-- Known issues: {issues}
-- Use this to answer questions about the data."""
+    # Define function tools for OpenAI
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_row",
+                "description": "Get a row from the dataset matching a condition. Use this to find a specific record.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string", "description": "Column name to filter by"},
+                        "value": {"type": "string", "description": "Value to match (will be auto-converted to match column type)"}
+                    },
+                    "required": ["column", "value"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_value",
+                "description": "Get a specific value from a row. Filter by one column, get another column's value.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string", "description": "Column name to get the value from"},
+                        "filter_column": {"type": "string", "description": "Column name to filter by"},
+                        "filter_value": {"type": "string", "description": "Value to filter by (will be auto-converted)"}
+                    },
+                    "required": ["column", "filter_column", "filter_value"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "calculate_ratio",
+                "description": "Calculate ratio between two columns. Optionally filter by a condition first.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "numerator_column": {"type": "string", "description": "Column for numerator"},
+                        "denominator_column": {"type": "string", "description": "Column for denominator"},
+                        "filter_column": {"type": "string", "description": "Optional: Column to filter by"},
+                        "filter_value": {"type": "string", "description": "Optional: Value to filter by"}
+                    },
+                    "required": ["numerator_column", "denominator_column"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_statistics",
+                "description": "Get statistics for a column (count, nulls, mean, min, max)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string", "description": "Column name"}
+                    },
+                    "required": ["column"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_columns",
+                "description": "List all columns in the dataset",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_row_count",
+                "description": "Get total number of rows and columns",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }
+    ]
 
     messages = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
     
-    return await chat_completion(messages, temperature=0.7)
+    if not df is None:
+        # Use function calling
+        client = get_client()
+        response = await client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=0.7,
+            max_tokens=2048,
+        )
+        
+        message = response.choices[0].message
+        
+        # Handle function calls
+        while message.tool_calls:
+            messages.append(message)
+            
+            # Execute function calls
+            for tool_call in message.tool_calls:
+                function_name = tool_call.function.name
+                arguments = json.loads(tool_call.function.arguments)
+                result = _execute_data_query(df, function_name, arguments)
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result)
+                })
+            
+            # Get next response
+            response = await client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=2048,
+            )
+            message = response.choices[0].message
+        
+        return message.content or "I couldn't process your request."
+    else:
+        # No data available, use regular chat
+        return await chat_completion(messages, temperature=0.7)

@@ -13,7 +13,6 @@ from db import get_session
 from orchestrator.workflow import Orchestrator
 from llm import classify_intent, chat_with_agent
 from agents.data_ops import DataOperator
-from agents.dataset_fetcher import list_available_datasets, fetch_dataset
 from agents.dataset_search import (
     search_datasets,
     cache_search_results,
@@ -157,8 +156,7 @@ async def chat(
             cache_search_results(dataset_id, results)
             response += format_search_results(results)
         else:
-            response += "❌ No datasets found. Try different keywords or use quick-access datasets:\n\n"
-            response += list_available_datasets()
+            response += "❌ No datasets found. Try different keywords or upload a CSV file."
 
     elif intent == "select_result":
         # Ensure selection is an integer
@@ -190,32 +188,10 @@ async def chat(
             else:
                 response = f"❌ {download_result['error']}\n\nTry selecting a different result or search again."
 
-    elif intent == "list_datasets":
-        response = list_available_datasets()
-        response += "\n\n💡 *Or search for any dataset: 'find climate data', 'search for stocks'*"
-
-    elif intent == "fetch_dataset":
-        dataset_name = params.get("dataset_name", "").lower()
-        if not dataset_name:
-            response = "Which dataset would you like?\n\n" + list_available_datasets()
-        else:
-            save_path = Path("storage/raw") / f"{dataset_id}_{dataset_name}.csv"
-            result = await fetch_dataset(dataset_name, save_path)
-            
-            if result["success"]:
-                state = await orchestrator.run_pipeline(session, dataset_id, save_path)
-                response = f"✅ **Fetched '{dataset_name}'!**\n\n"
-                response += f"📊 {result['rows']} rows, {result['columns']} columns\n"
-                response += f"Columns: `{', '.join(result['column_names'])}`\n\n"
-                response += "Say **'show data'** to preview or **'download'** to get the file."
-            else:
-                response = f"❌ {result['error']}\n\n💡 Try searching: *'find {dataset_name} data'*"
-    
     elif intent == "show_data":
         if not has_data:
             response = "📂 **No data loaded.**\n\n"
             response += "- 🔍 **Search**: *'find weather data'*\n"
-            response += "- ⚡ **Quick**: *'fetch titanic'*\n"
             response += "- 📎 **Upload**: Use the attachment button"
         else:
             try:
@@ -265,16 +241,16 @@ async def chat(
     
     else:  # chat
         if not has_data:
-            response = "👋 **Welcome!** I can help you find and clean datasets.\n\n"
+            response = "**Welcome!** I can help you find and clean datasets.\n\n"
             response += "**Try:**\n"
             response += "- 🔍 *'find datasets about climate'*\n"
-            response += "- ⚡ *'fetch titanic'* (quick access)\n"
             response += "- 📎 Upload a CSV using the attachment button"
         else:
             context = {"columns": columns, "issues": state.quality_issues[:3] if state.quality_issues else []}
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
+            data_path = state.curated_path or state.raw_path
             try:
-                response = await chat_with_agent(user_msg, context=context, history=history)
+                response = await chat_with_agent(user_msg, data_path=data_path, context=context, history=history)
             except Exception as e:
                 response = f"Error: {str(e)}\n\nTry: *'show data'* or *'remove column X'*"
 

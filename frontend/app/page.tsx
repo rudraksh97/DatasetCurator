@@ -25,7 +25,7 @@ interface ChatMessage {
 const WELCOME_MESSAGE: ChatMessage = {
   id: "welcome",
   role: "assistant",
-  content: "Welcome to the **Dataset Curator**!\n\nYou can:\n- 🔍 **Search for datasets** - *\"find climate data\"*, *\"search for stock prices\"*\n- ⚡ **Quick access** - *\"fetch titanic\"* or *\"list datasets\"*\n- 📎 **Upload a CSV** using the attachment button\n- 🔧 **Transform data** - *\"remove column X\"*, *\"filter where Y > 10\"*\n\nWhat data are you looking for?",
+  content: "Welcome to the **Dataset Curator**!\n\nYou can:\n- 🔍 **Search for datasets** - *\"find climate data\"*, *\"search for stock prices\"*\n- 📎 **Upload a CSV** using the attachment button\n- 🔧 **Transform data** - *\"remove column X\"*, *\"filter where Y > 10\"*\n\nWhat data are you looking for?",
   timestamp: new Date(),
 };
 
