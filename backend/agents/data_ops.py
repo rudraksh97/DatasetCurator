@@ -16,6 +16,35 @@ class DataOperator:
         self.original_shape = df.shape
         self.operations_log: List[str] = []
 
+    # ---- Internal helpers -------------------------------------------------
+
+    def _match_column(self, col: str) -> Optional[str]:
+        """Return the best matching column (case-insensitive, partial)."""
+        if col in self.df.columns:
+            return col
+        lower = col.lower()
+        # Exact case-insensitive
+        for c in self.df.columns:
+            if c.lower() == lower:
+                return c
+        # Partial match
+        for c in self.df.columns:
+            if lower in c.lower() or c.lower() in lower:
+                return c
+        return None
+
+    def _coerce_value(self, col: str, value: Any) -> Any:
+        """Try to coerce value to match column dtype."""
+        try:
+            col_dtype = self.df[col].dtype
+            if pd.api.types.is_integer_dtype(col_dtype):
+                return int(value)
+            if pd.api.types.is_float_dtype(col_dtype):
+                return float(value)
+        except Exception:
+            pass
+        return value
+
     def execute(self, operation: str, params: Dict[str, Any]) -> Tuple[bool, str]:
         """Execute a single operation and return success status and message."""
         op_map = {
@@ -50,13 +79,9 @@ class DataOperator:
 
     def _drop_column(self, params: Dict) -> str:
         col = params.get("column")
-        if col not in self.df.columns:
-            # Try case-insensitive match
-            matches = [c for c in self.df.columns if c.lower() == col.lower()]
-            if matches:
-                col = matches[0]
-            else:
-                return f"Column '{col}' not found. Available: {list(self.df.columns)}"
+        col = self._match_column(col) if col else None
+        if not col:
+            return f"Column not found. Available: {list(self.df.columns)}"
         self.df = self.df.drop(columns=[col])
         return f"Dropped column '{col}'. Now {len(self.df.columns)} columns."
 
@@ -134,39 +159,15 @@ class DataOperator:
         col = params.get("column")
         operator = params.get("operator", "==")
         value = params.get("value")
-        
-        if col not in self.df.columns:
-            # Try case-insensitive match
-            matches = [c for c in self.df.columns if c.lower() == col.lower()]
-            if matches:
-                col = matches[0]
-            else:
-                # Try partial match
-                matches = [c for c in self.df.columns if col.lower() in c.lower() or c.lower() in col.lower()]
-                if matches:
-                    col = matches[0]
-                else:
-                    return f"Column '{col}' not found. Available: {list(self.df.columns)}"
-        
+
+        col = self._match_column(col) if col else None
+        if not col:
+            return f"Column not found. Available: {list(self.df.columns)}"
+
         before = len(self.df)
         
         # Try to convert value to match column dtype
-        try:
-            col_dtype = self.df[col].dtype
-            if pd.api.types.is_integer_dtype(col_dtype):
-                # Try converting value to int
-                try:
-                    value = int(value)
-                except (ValueError, TypeError):
-                    pass
-            elif pd.api.types.is_float_dtype(col_dtype):
-                # Try converting value to float
-                try:
-                    value = float(value)
-                except (ValueError, TypeError):
-                    pass
-        except Exception:
-            pass  # Keep original value if conversion fails
+        value = self._coerce_value(col, value)
         
         if operator == "==":
             self.df = self.df[self.df[col] == value]
@@ -190,39 +191,15 @@ class DataOperator:
         col = params.get("column")
         operator = params.get("operator", "==")
         value = params.get("value")
-        
-        if col not in self.df.columns:
-            # Try case-insensitive match
-            matches = [c for c in self.df.columns if c.lower() == col.lower()]
-            if matches:
-                col = matches[0]
-            else:
-                # Try partial match
-                matches = [c for c in self.df.columns if col.lower() in c.lower() or c.lower() in col.lower()]
-                if matches:
-                    col = matches[0]
-                else:
-                    return f"Column '{col}' not found. Available: {list(self.df.columns)}"
-        
+
+        col = self._match_column(col) if col else None
+        if not col:
+            return f"Column not found. Available: {list(self.df.columns)}"
+
         before = len(self.df)
         
         # Try to convert value to match column dtype
-        try:
-            col_dtype = self.df[col].dtype
-            if pd.api.types.is_integer_dtype(col_dtype):
-                # Try converting value to int
-                try:
-                    value = int(value)
-                except (ValueError, TypeError):
-                    pass
-            elif pd.api.types.is_float_dtype(col_dtype):
-                # Try converting value to float
-                try:
-                    value = float(value)
-                except (ValueError, TypeError):
-                    pass
-        except Exception:
-            pass  # Keep original value if conversion fails
+        value = self._coerce_value(col, value)
         
         if operator == "==":
             self.df = self.df[self.df[col] != value]

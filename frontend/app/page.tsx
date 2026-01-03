@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { downloadCuratedFile, uploadDataset, sendChatMessage, getPreview } from "@/lib/api";
 import type { UploadResponse } from "@/types/api";
 import { Button } from "@/components/ui/button";
@@ -25,13 +25,16 @@ interface ChatMessage {
 const WELCOME_MESSAGE: ChatMessage = {
   id: "welcome",
   role: "assistant",
-  content: "Welcome to the **Dataset Curator**!\n\nYou can:\n- **Search for datasets** - *\"find climate data\"*, *\"search for stock prices\"*\n- **Upload a CSV** using the attachment button\n- **Transform data** - *\"remove column X\"*, *\"filter where Y > 10\"*\n\nWhat data are you looking for?",
+  content: "Welcome to the **Dataset Curator**!\n\nYou can:\n- **Upload a CSV** using the attachment button\n- **Transform data** - *\"remove column X\"*, *\"filter where Y > 10\"*\n- **Ask questions** about your data\n\nUpload a dataset to get started!",
   timestamp: new Date(),
 };
 
 export default function Home() {
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<UploadResponse["preview"]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [inputMessage, setInputMessage] = useState("");
@@ -96,8 +99,8 @@ export default function Home() {
     const savedChat = localStorage.getItem(`chat_history_${sessionId}`);
     if (savedChat) {
       try {
-        const parsed = JSON.parse(savedChat);
-        setMessages(parsed.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })));
+        const parsed = JSON.parse(savedChat) as Array<Omit<ChatMessage, "timestamp"> & { timestamp: string }>;
+        setMessages(parsed.map((m) => ({ ...m, timestamp: new Date(m.timestamp) })));
       } catch (e) {
         console.error("Failed to parse chat history", e);
         setMessages([WELCOME_MESSAGE]);
@@ -111,15 +114,24 @@ export default function Home() {
     
     // Fetch preview from backend
     try {
-      const data = await getPreview(sessionId);
+      const data = await getPreview(sessionId, 1, 50);
       if (data) {
         setPreview(data.preview || []);
+        setCurrentPage(data.page || 1);
+        setTotalPages(data.total_pages || 1);
+        setTotalRows(data.total_rows || 0);
       } else {
         setPreview([]);
+        setCurrentPage(1);
+        setTotalPages(1);
+        setTotalRows(0);
       }
     } catch (e) {
       console.error("Failed to fetch preview", e);
       setPreview([]);
+      setCurrentPage(1);
+      setTotalPages(1);
+      setTotalRows(0);
     }
   }, []);
 
@@ -131,8 +143,27 @@ export default function Home() {
     setDatasetId("");
     setActiveSession(null);
     setPreview([]);
+    setCurrentPage(1);
+    setTotalPages(1);
+    setTotalRows(0);
     setMessages([WELCOME_MESSAGE]);
     setInputMessage("");
+  };
+
+  const handlePageChange = async (newPage: number) => {
+    if (!datasetId || newPage < 1 || newPage > totalPages) return;
+    
+    try {
+      const data = await getPreview(datasetId, newPage, 50);
+      if (data) {
+        setPreview(data.preview || []);
+        setCurrentPage(data.page || 1);
+        setTotalPages(data.total_pages || 1);
+        setTotalRows(data.total_rows || 0);
+      }
+    } catch (e) {
+      console.error("Failed to fetch page", e);
+    }
   };
 
   // Update active session when datasetId changes
@@ -150,7 +181,7 @@ export default function Home() {
       timestamp: new Date() 
     };
     
-    setMessages((prev) => {
+    setMessages((prev: ChatMessage[]) => {
       const updated = [...prev, newMessage];
       if (datasetId) {
         localStorage.setItem(`chat_history_${datasetId}`, JSON.stringify(updated));
@@ -181,6 +212,9 @@ export default function Home() {
       const newPreview = res.preview || [];
       
       setPreview(newPreview);
+      setCurrentPage(res.page || 1);
+      setTotalPages(res.total_pages || 1);
+      setTotalRows(res.total_rows || res.row_count || 0);
 
       // Use actual counts from backend, fallback to preview dimensions only if not available
       const cols = res.column_count !== undefined ? res.column_count : (newPreview[0] ? Object.keys(newPreview[0]).length : 0);
@@ -259,9 +293,12 @@ export default function Home() {
       
       // Refresh data preview after chat (transformations may have occurred)
       try {
-        const data = await getPreview(datasetId);
+        const data = await getPreview(datasetId, currentPage, 50);
         if (data) {
           setPreview(data.preview || []);
+          setCurrentPage(data.page || 1);
+          setTotalPages(data.total_pages || 1);
+          setTotalRows(data.total_rows || 0);
         }
       } catch {
         // Ignore preview fetch errors
@@ -298,7 +335,7 @@ export default function Home() {
         </div>
 
         <ScrollArea className="chat-messages">
-          {messages.map((msg) => (
+          {messages.map((msg: ChatMessage) => (
             <div key={msg.id} className={`chat-message ${msg.role}`}>
               <Avatar>
                 <AvatarFallback>{msg.role === "user" ? Icons.user : Icons.bot}</AvatarFallback>
@@ -341,7 +378,7 @@ export default function Home() {
               type="text"
               placeholder={isProcessing ? "Processing..." : "Ask anything or upload a CSV..."}
               value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
               disabled={isProcessing}
             />
             {preview.length > 0 && (
@@ -376,7 +413,10 @@ export default function Home() {
             {preview.length > 0 && (
               <div className="data-stats">
                 <Badge variant="secondary">{preview[0] ? Object.keys(preview[0]).length : 0} columns</Badge>
-                <Badge variant="secondary">{preview.length} rows</Badge>
+                <Badge variant="secondary">{totalRows || preview.length} rows</Badge>
+                {totalPages > 1 && (
+                  <Badge variant="secondary">Page {currentPage} of {totalPages}</Badge>
+                )}
               </div>
             )}
           </div>
@@ -386,15 +426,15 @@ export default function Home() {
               <Table>
                 <THead>
                   <TR>
-                    {Object.keys(preview[0]).map((col) => (
+                    {Object.keys(preview[0]).map((col: string) => (
                       <TH key={col}>{col}</TH>
                     ))}
                   </TR>
                 </THead>
                 <TBody>
-                  {preview.map((row, idx) => (
+                  {preview.map((row: Record<string, unknown>, idx: number) => (
                     <TR key={idx}>
-                      {Object.entries(row).map(([col, val]) => (
+                      {Object.entries(row).map(([col, val]: [string, unknown]) => (
                         <TD key={col}>{val === null || val === "" ? <span className="null-value">null</span> : String(val)}</TD>
                       ))}
                     </TR>
@@ -402,6 +442,35 @@ export default function Home() {
                 </TBody>
               </Table>
             </ScrollArea>
+            
+            {totalPages > 1 && (
+              <div className="pagination-controls" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e5e7eb" }}>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handlePageChange(currentPage - 1)}
+                    disabled={currentPage === 1}
+                  >
+                    Previous
+                  </Button>
+                  <span style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handlePageChange(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
+                <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                  Showing {((currentPage - 1) * 50) + 1} - {Math.min(currentPage * 50, totalRows)} of {totalRows} rows
+                </div>
+              </div>
+            )}
           ) : (
             <div className="empty-state">
               <div className="empty-icon">{Icons.barChart}</div>

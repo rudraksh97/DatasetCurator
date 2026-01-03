@@ -1,9 +1,9 @@
-import { ReactNode } from "react";
+import React, { ReactNode } from "react";
 import clsx from "clsx";
 
 interface CardProps {
   title?: string;
-  children: ReactNode;
+  children?: ReactNode;
   className?: string;
 }
 

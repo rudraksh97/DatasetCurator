@@ -1,8 +1,7 @@
-"""Tests for data operations and dataset fetcher."""
+"""Tests for data operations."""
 import pandas as pd
 import pytest
 from agents.data_ops import DataOperator
-from agents.dataset_fetcher import list_available_datasets, SAMPLE_DATASETS
 
 
 def test_data_operator_drop_column():
@@ -55,14 +54,3 @@ def test_data_operator_invalid_column():
     assert "not found" in msg.lower()
 
 
-def test_list_available_datasets():
-    result = list_available_datasets()
-    assert "titanic" in result.lower()
-    assert "iris" in result.lower()
-
-
-def test_sample_datasets_structure():
-    """Verify all sample datasets have required fields."""
-    for name, info in SAMPLE_DATASETS.items():
-        assert "url" in info, f"{name} missing url"
-        assert "description" in info, f"{name} missing description"

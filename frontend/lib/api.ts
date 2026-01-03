@@ -32,8 +32,8 @@ export async function sendChatMessage(datasetId: string, content: string) {
   return handle<{ user_message: string; assistant_message: string }>(res);
 }
 
-export async function getPreview(datasetId: string) {
-  const res = await fetch(`${BASE_URL}/preview/${datasetId}`);
+export async function getPreview(datasetId: string, page: number = 1, pageSize: number = 50) {
+  const res = await fetch(`${BASE_URL}/preview/${datasetId}?page=${page}&page_size=${pageSize}`);
   if (res.status === 404) return null;
-  return handle<{ dataset_id: string; preview: Array<Record<string, any>>; row_count?: number; column_count?: number }>(res);
+  return handle<{ dataset_id: string; preview: Array<Record<string, any>>; row_count: number; column_count: number; page: number; page_size: number; total_rows: number; total_pages: number }>(res);
 }

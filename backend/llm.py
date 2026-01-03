@@ -1,10 +1,10 @@
-"""OpenRouter LLM client for chat and data operations."""
+"""LLM helpers for intent classification and data-aware chat."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -17,16 +17,19 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
+# ---- Types -----------------------------------------------------------------
+Message = Dict[str, Any]
+
 
 def get_client() -> AsyncOpenAI:
-    """Get async OpenAI client configured for OpenRouter."""
+    """Return an async OpenAI client configured for OpenRouter."""
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY not set in environment")
     return AsyncOpenAI(base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY)
 
 
 async def chat_completion(
-    messages: List[Dict[str, str]],
+    messages: Sequence[Message],
     model: str = DEFAULT_MODEL,
     temperature: float = 0.7,
     max_tokens: int = 2048,
@@ -58,43 +61,35 @@ def _parse_json_response(response: str) -> Optional[Dict[str, Any]]:
 
 
 DATA_OPERATIONS = [
-    "drop_column", "rename_column", "drop_nulls", "fill_nulls", "drop_duplicates",
-    "filter_rows", "drop_rows", "add_column", "add_conditional_column",
-    "convert_type", "sort", "replace_values", "lowercase", "uppercase", "strip_whitespace"
+    "drop_column",
+    "rename_column",
+    "drop_nulls",
+    "fill_nulls",
+    "drop_duplicates",
+    "filter_rows",
+    "drop_rows",
+    "add_column",
+    "add_conditional_column",
+    "convert_type",
+    "sort",
+    "replace_values",
+    "lowercase",
+    "uppercase",
+    "strip_whitespace",
 ]
 
-
-async def classify_intent(
-    user_message: str,
-    has_data: bool = False,
-    columns: Optional[List[str]] = None,
-    has_search_results: bool = False,
-) -> Dict[str, Any]:
-    """Use LLM to classify user intent and extract parameters."""
-    
-    # Build columns info separately to avoid backslash in f-string
-    columns_info = ""
-    if columns:
-        columns_info = "\nAvailable columns: " + ", ".join(columns)
-    
-    system_prompt = f"""You are an intent classifier for a dataset curator application.
+# ---- Prompts ---------------------------------------------------------------
+INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
 
 IMPORTANT: Distinguish between QUESTIONS and COMMANDS!
 - QUESTIONS about data should be "chat" (user wants information, not changes)
 - COMMANDS to modify data should be "transform_data" (user wants to change the data)
 
-SELECTION RULES (only if pending search results = {has_search_results}):
-- If the user replies with a number (1-8) or phrases like "load 1", "use option three", "pick #4", classify as "select_result".
-- Always set params to {{"selection": <integer between 1 and 8>}}. Convert spelled-out numbers to digits.
-- If there are NO search results, do NOT guess "select_result"—treat it as "chat" or ask the user to search.
-
 Classify the user's message into ONE of these intents:
 
-1. "search_datasets" - User wants to FIND/SEARCH for new datasets
-2. "select_result" - User selecting from search results (e.g., "1", "use 2", "load 3")
-3. "show_data" - User wants to preview current data
-4. "transform_data" - User gives a COMMAND to MODIFY data (remove, delete, drop, add, rename, filter)
-5. "chat" - QUESTIONS about data OR general conversation (are there, how many, what, check, tell me, do I have)
+1. "show_data" - User wants to preview current data
+2. "transform_data" - User gives a COMMAND to MODIFY data (remove, delete, drop, add, rename, filter)
+3. "chat" - QUESTIONS about data OR general conversation (are there, how many, what, check, tell me, do I have)
 
 CRITICAL DISTINCTION:
 - "are there any nulls?" → chat (asking a QUESTION)
@@ -106,22 +101,14 @@ CRITICAL DISTINCTION:
 - "check for duplicates" → chat (QUESTION - they want to know, not delete)
 - "remove duplicates" → transform_data (COMMAND)
 
-User has data: {has_data}
-Has search results: {has_search_results}{columns_info}
+User has data: {has_data}{columns_info}
 
 Respond with ONLY valid JSON:
 {{"intent": "intent_name", "params": {{}}, "explanation": "Brief explanation"}}
 
-"select_result" params MUST look like: {{"selection": 4}} (integer)
-"search_datasets": {{"query": "term"}}
 "transform_data": {{"operation": "op_name", ...}}
 
 Examples:
-- "1" -> {{"intent": "select_result", "params": {{"selection": 1}}, "explanation": "User selected option 1"}}
-- "load 2" -> {{"intent": "select_result", "params": {{"selection": 2}}, "explanation": "User wants result #2"}}
-- "option five please" -> {{"intent": "select_result", "params": {{"selection": 5}}, "explanation": "User picked result #5"}}
-- "use the second one" -> {{"intent": "select_result", "params": {{"selection": 2}}, "explanation": "User selected option 2"}}
-- "find datasets about weather" -> {{"intent": "search_datasets", "params": {{"query": "weather"}}, "explanation": "Search for weather datasets"}}
 - "show data" -> {{"intent": "show_data", "params": {{}}, "explanation": "Preview data"}}
 - "remove age column" -> {{"intent": "transform_data", "params": {{"operation": "drop_column", "column": "age"}}, "explanation": "Remove age"}}
 
@@ -158,6 +145,167 @@ IMPORTANT for add_conditional_column with multiple ranges:
 
 ONLY respond with JSON."""
 
+CHAT_SYSTEM_TEMPLATE = """You are the Dataset Curator, an AI that helps answer questions about datasets.
+
+IMPORTANT: When users ask questions about the data, you MUST use the provided functions to query the actual dataset.
+DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
+
+Available functions:
+- get_row: Get a row matching a condition (column == value)
+- get_value: Get a specific value from a row (filter by one column, get another column's value)
+- get_random_value: Get a random value from a column, or a random row (use for "random X", "give me a random Y" questions)
+- calculate_ratio: Calculate ratio between two columns (optionally filtered)
+- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max)
+- group_by: Group data by a column and count/aggregate (use for "breakdown", "group by", "count by" questions)
+- list_columns: List all columns in the dataset
+- get_row_count: Get total row and column count
+
+When answering questions:
+1. First, understand what data is needed
+2. Call the appropriate function(s) to get the actual data
+3. Use the returned values in your answer
+4. Show your calculations if doing math
+
+Be accurate and cite the actual data values you retrieve."""
+
+
+def _build_chat_system_prompt(columns: Optional[List[str]] = None) -> str:
+    """Build the system prompt for data-grounded chat."""
+    prompt = CHAT_SYSTEM_TEMPLATE
+    if columns:
+        prompt += f"\n\nAvailable columns: {', '.join(columns)}"
+    return prompt
+
+
+# Tool schema for OpenAI function calling
+CHAT_TOOLS: List[Dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_row",
+            "description": "Get a row from the dataset matching a condition. Use this to find a specific record.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name to filter by"},
+                    "value": {"type": "string", "description": "Value to match (will be auto-converted to match column type)"},
+                },
+                "required": ["column", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_value",
+            "description": "Get a specific value from a row. Filter by one column, get another column's value.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name to get the value from"},
+                    "filter_column": {"type": "string", "description": "Column name to filter by"},
+                    "filter_value": {"type": "string", "description": "Value to filter by (will be auto-converted)"},
+                },
+                "required": ["column", "filter_column", "filter_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_random_value",
+            "description": "Get a random value from a column, or a random row. Use for questions like 'give me a random X', 'show me a random Y', 'random question text'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Optional: Column name to get a random value from. If not provided, returns a random row."}
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate_ratio",
+            "description": "Calculate ratio between two columns. Optionally filter by a condition first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "numerator_column": {"type": "string", "description": "Column for numerator"},
+                    "denominator_column": {"type": "string", "description": "Column for denominator"},
+                    "filter_column": {"type": "string", "description": "Optional: Column to filter by"},
+                    "filter_value": {"type": "string", "description": "Optional: Value to filter by"},
+                },
+                "required": ["numerator_column", "denominator_column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_statistics",
+            "description": "Get statistics for a column (count, nulls, mean, variance, std, min, max)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name"}
+                },
+                "required": ["column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "group_by",
+            "description": "Group data by a column and count or aggregate. Use this for questions like 'breakdown by X', 'group by Y', 'count by Z', 'how many of each X'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name to group by"},
+                    "aggregation": {"type": "string", "description": "Aggregation function: 'count' (default), 'sum', 'mean', 'min', 'max'"},
+                    "aggregation_column": {"type": "string", "description": "Optional: Column to aggregate when using sum/mean/min/max"},
+                },
+                "required": ["column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_columns",
+            "description": "List all columns in the dataset",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_row_count",
+            "description": "Get total number of rows and columns",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
+async def classify_intent(
+    user_message: str,
+    has_data: bool = False,
+    columns: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Use LLM to classify user intent and extract parameters."""
+    
+    columns_info = ""
+    if columns:
+        columns_info = "\nAvailable columns: " + ", ".join(columns)
+
+    system_prompt = INTENT_SYSTEM_TEMPLATE.format(
+        has_data=has_data,
+        columns_info=columns_info,
+    )
+
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
@@ -169,39 +317,7 @@ ONLY respond with JSON."""
         if result and "intent" in result:
             return result
     except Exception as e:
-        error_str = str(e)
         print(f"Intent classification error: {e}")
-        
-        # If rate limited, use simple keyword fallback (no regex)
-        if "429" in error_str or "rate limit" in error_str.lower():
-            # Simple string-based fallback when LLM is unavailable
-            msg_lower = user_message.lower()
-            
-            # Check for search patterns (simple string contains, no regex)
-            search_keywords = ["find", "search", "get", "look for", "dataset"]
-            if any(keyword in msg_lower for keyword in search_keywords):
-                # Extract query: remove common prefixes
-                query = user_message
-                for prefix in ["find", "search for", "search", "get", "look for"]:
-                    if msg_lower.startswith(prefix):
-                        query = user_message[len(prefix):].strip()
-                        break
-                return {
-                    "intent": "search_datasets",
-                    "params": {"query": query or user_message},
-                    "explanation": "Fallback: detected search intent"
-                }
-            
-            # Check for selection when search results exist
-            if has_search_results:
-                # Check if message is just a number
-                stripped = user_message.strip().rstrip(".!?")
-                if stripped.isdigit():
-                    return {
-                        "intent": "select_result",
-                        "params": {"selection": int(stripped)},
-                        "explanation": "Fallback: detected numeric selection"
-                    }
     
     return {"intent": "chat", "params": {}, "explanation": "Could not classify intent"}
 
@@ -460,148 +576,9 @@ async def chat_with_agent(
     """Chat with the dataset curator agent - answers questions about data using function calling."""
     
     df = _load_dataframe(data_path)
-    
-    system_prompt = """You are the Dataset Curator, an AI that helps answer questions about datasets.
+    system_prompt = _build_chat_system_prompt(context.get("columns") if context else None)
 
-IMPORTANT: When users ask questions about the data, you MUST use the provided functions to query the actual dataset.
-DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
-
-Available functions:
-- get_row: Get a row matching a condition (column == value)
-- get_value: Get a specific value from a row (filter by one column, get another column's value)
-- get_random_value: Get a random value from a column, or a random row (use for "random X", "give me a random Y" questions)
-- calculate_ratio: Calculate ratio between two columns (optionally filtered)
-- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max)
-- group_by: Group data by a column and count/aggregate (use for "breakdown", "group by", "count by" questions)
-- list_columns: List all columns in the dataset
-- get_row_count: Get total row and column count
-
-When answering questions:
-1. First, understand what data is needed
-2. Call the appropriate function(s) to get the actual data
-3. Use the returned values in your answer
-4. Show your calculations if doing math
-
-Be accurate and cite the actual data values you retrieve."""
-
-    if context:
-        cols = context.get('columns', [])
-        if cols:
-            system_prompt += f"\n\nAvailable columns: {', '.join(cols)}"
-
-    # Define function tools for OpenAI
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_row",
-                "description": "Get a row from the dataset matching a condition. Use this to find a specific record.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "column": {"type": "string", "description": "Column name to filter by"},
-                        "value": {"type": "string", "description": "Value to match (will be auto-converted to match column type)"}
-                    },
-                    "required": ["column", "value"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_value",
-                "description": "Get a specific value from a row. Filter by one column, get another column's value.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "column": {"type": "string", "description": "Column name to get the value from"},
-                        "filter_column": {"type": "string", "description": "Column name to filter by"},
-                        "filter_value": {"type": "string", "description": "Value to filter by (will be auto-converted)"}
-                    },
-                    "required": ["column", "filter_column", "filter_value"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_random_value",
-                "description": "Get a random value from a column, or a random row. Use for questions like 'give me a random X', 'show me a random Y', 'random question text'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "column": {"type": "string", "description": "Optional: Column name to get a random value from. If not provided, returns a random row."}
-                    },
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "calculate_ratio",
-                "description": "Calculate ratio between two columns. Optionally filter by a condition first.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "numerator_column": {"type": "string", "description": "Column for numerator"},
-                        "denominator_column": {"type": "string", "description": "Column for denominator"},
-                        "filter_column": {"type": "string", "description": "Optional: Column to filter by"},
-                        "filter_value": {"type": "string", "description": "Optional: Value to filter by"}
-                    },
-                    "required": ["numerator_column", "denominator_column"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_statistics",
-                "description": "Get statistics for a column (count, nulls, mean, variance, std, min, max)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "column": {"type": "string", "description": "Column name"}
-                    },
-                    "required": ["column"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "group_by",
-                "description": "Group data by a column and count or aggregate. Use this for questions like 'breakdown by X', 'group by Y', 'count by Z', 'how many of each X'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "column": {"type": "string", "description": "Column name to group by"},
-                        "aggregation": {"type": "string", "description": "Aggregation function: 'count' (default), 'sum', 'mean', 'min', 'max'"},
-                        "aggregation_column": {"type": "string", "description": "Optional: Column to aggregate when using sum/mean/min/max"}
-                    },
-                    "required": ["column"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_columns",
-                "description": "List all columns in the dataset",
-                "parameters": {"type": "object", "properties": {}}
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_row_count",
-                "description": "Get total number of rows and columns",
-                "parameters": {"type": "object", "properties": {}}
-            }
-        }
-    ]
-
-    messages = [{"role": "system", "content": system_prompt}]
+    messages: List[Message] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
@@ -615,7 +592,7 @@ Be accurate and cite the actual data values you retrieve."""
             response = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
-                tools=tools,
+                tools=CHAT_TOOLS,
                 tool_choice="auto",
                 temperature=0.7,
                 max_tokens=2048,
@@ -644,7 +621,7 @@ Be accurate and cite the actual data values you retrieve."""
                 response = await client.chat.completions.create(
                     model=DEFAULT_MODEL,
                     messages=messages,
-                    tools=tools,
+                    tools=CHAT_TOOLS,
                     tool_choice="auto",
                     temperature=0.7,
                     max_tokens=2048,

@@ -13,13 +13,6 @@ from db import get_session
 from orchestrator.workflow import Orchestrator
 from llm import classify_intent, chat_with_agent
 from agents.data_ops import DataOperator
-from agents.dataset_search import (
-    search_datasets,
-    cache_search_results,
-    get_cached_results,
-    format_search_results,
-    download_from_search_result,
-)
 
 router = APIRouter()
 orchestrator = Orchestrator()
@@ -44,11 +37,35 @@ def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
     return "\n".join([headers, separator] + rows)
 
 
-def _preview_df(path: Path) -> List[Dict[str, object]]:
+def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, object]:
+    """Get paginated preview of dataframe."""
     try:
-        return pd.read_csv(path, nrows=20).to_dict(orient="records")
-    except Exception:
-        return []
+        df = pd.read_csv(path)
+        total_rows = len(df)
+        total_pages = (total_rows + page_size - 1) // page_size  # Ceiling division
+        
+        # Calculate skip and take
+        skip = (page - 1) * page_size
+        take = page_size
+        
+        # Get the page of data
+        page_data = df.iloc[skip:skip + take].to_dict(orient="records")
+        
+        return {
+            "data": page_data,
+            "page": page,
+            "page_size": page_size,
+            "total_rows": total_rows,
+            "total_pages": total_pages,
+        }
+        except Exception:
+        return {
+            "data": [],
+            "page": 1,
+            "page_size": page_size,
+            "total_rows": 0,
+            "total_pages": 0,
+        }
 
 
 @router.post("/upload")
@@ -75,17 +92,28 @@ async def upload_dataset(
     row_count = int(len(df))
     column_count = int(len(df.columns))
 
+    preview_data = _preview_df(target_path, page=1, page_size=50)
+    
     return {
         "dataset_id": dataset_id,
-        "preview": _preview_df(target_path),
+        "preview": preview_data["data"],
         "row_count": row_count,
         "column_count": column_count,
+        "page": preview_data["page"],
+        "page_size": preview_data["page_size"],
+        "total_rows": preview_data["total_rows"],
+        "total_pages": preview_data["total_pages"],
     }
 
 
 @router.get("/preview/{dataset_id}")
-async def get_preview(dataset_id: str, session: AsyncSession = Depends(get_session)) -> Dict[str, object]:
-    """Get data preview."""
+async def get_preview(
+    dataset_id: str, 
+    page: int = 1,
+    page_size: int = 50,
+    session: AsyncSession = Depends(get_session)
+) -> Dict[str, object]:
+    """Get paginated data preview."""
     try:
         state = await orchestrator._get_state(session, dataset_id)
     except ValueError:
@@ -93,22 +121,36 @@ async def get_preview(dataset_id: str, session: AsyncSession = Depends(get_sessi
 
     data_path = state.curated_path or state.raw_path
     
-    # Get actual row and column counts
-    row_count = 0
-    column_count = 0
-    if data_path:
-        try:
-            df = pd.read_csv(Path(data_path))
-            row_count = len(df)
-            column_count = len(df.columns)
-        except Exception:
-            pass
+    if not data_path:
+        return {
+            "dataset_id": dataset_id,
+            "preview": [],
+            "row_count": 0,
+            "column_count": 0,
+            "page": 1,
+            "page_size": page_size,
+            "total_rows": 0,
+            "total_pages": 0,
+        }
+    
+    preview_data = _preview_df(Path(data_path), page=page, page_size=page_size)
+    
+    # Get column count
+    try:
+        df = pd.read_csv(Path(data_path), nrows=1)
+        column_count = len(df.columns)
+    except Exception:
+        column_count = 0
     
     return {
         "dataset_id": dataset_id,
-        "preview": _preview_df(Path(data_path)) if data_path else [],
-        "row_count": row_count,
+        "preview": preview_data["data"],
+        "row_count": preview_data["total_rows"],
         "column_count": column_count,
+        "page": preview_data["page"],
+        "page_size": preview_data["page_size"],
+        "total_rows": preview_data["total_rows"],
+        "total_pages": preview_data["total_pages"],
     }
 
 
@@ -148,16 +190,11 @@ async def chat(
         has_data = False
         columns = []
 
-    # Check if user has pending search results
-    cached_results = get_cached_results(dataset_id)
-    has_search_results = cached_results is not None and len(cached_results) > 0
-
     # Use LLM to classify intent
     intent_result = await classify_intent(
         user_msg,
         has_data=has_data,
         columns=columns,
-        has_search_results=has_search_results,
     )
     intent = intent_result.get("intent", "chat")
     params = intent_result.get("params", {})
@@ -165,52 +202,10 @@ async def chat(
     response = ""
 
     # Handle intents
-    if intent == "search_datasets":
-        query = params.get("query", user_msg)
-        response = f"🔎 Searching for **{query}** datasets...\n\n"
-        
-        results = search_datasets(query)
-        if results:
-            cache_search_results(dataset_id, results)
-            response += format_search_results(results)
-        else:
-            response += "No datasets found. Try different keywords or upload a CSV file."
-
-    elif intent == "select_result":
-        # Ensure selection is an integer
-        try:
-            selection = int(params.get("selection", 0))
-        except (ValueError, TypeError):
-            selection = 0
-        
-        if not cached_results:
-            response = "No search results to select from. Try searching first:\n- *'find weather data'*\n- *'search for stock prices'*"
-        elif selection < 1 or selection > len(cached_results):
-            response = f"Please select a number between 1 and {len(cached_results)}."
-        else:
-            result = cached_results[selection - 1]
-            response = f"Downloading **{result['title']}**...\n\n"
-            
-            save_path = Path("storage/raw") / f"{dataset_id}_search.csv"
-            download_result = await download_from_search_result(result, save_path)
-            
-            if download_result["success"]:
-                state = await orchestrator.run_pipeline(session, dataset_id, save_path)
-                response = f"**Loaded: {download_result['name']}**\n\n"
-                response += f"{download_result['rows']} rows, {download_result['columns']} columns\n"
-                response += f"Columns: `{', '.join(download_result['column_names'][:10])}`"
-                if len(download_result['column_names']) > 10:
-                    response += f" + {len(download_result['column_names']) - 10} more"
-                response += "\n\nSay **'show data'** to preview, or select another result (1-8)."
-                # Keep cache so user can try different results
-            else:
-                response = f"{download_result['error']}\n\nTry selecting a different result or search again."
-
-    elif intent == "show_data":
+    if intent == "show_data":
         if not has_data:
             response = "**No data loaded.**\n\n"
-            response += "- **Search**: *'find weather data'*\n"
-            response += "- **Upload**: Use the attachment button"
+            response += "Please upload a CSV file using the attachment button."
         else:
             try:
                 df = pd.read_csv(state.curated_path or state.raw_path)
@@ -259,10 +254,10 @@ async def chat(
     
     else:  # chat
         if not has_data:
-            response = "**Welcome!** I can help you find and clean datasets.\n\n"
+            response = "**Welcome!** I can help you clean and transform datasets.\n\n"
             response += "**Try:**\n"
-            response += "- *'find datasets about climate'*\n"
-            response += "- Upload a CSV using the attachment button"
+            response += "- Upload a CSV using the attachment button\n"
+            response += "- Transform your data with commands like *'remove column X'* or *'filter where Y > 10'*"
         else:
             context = {"columns": columns}
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
