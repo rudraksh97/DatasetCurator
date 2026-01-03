@@ -262,13 +262,11 @@ User has data: {has_data}{columns_info}
 Respond with ONLY valid JSON:
 {{"intent": "intent_name", "params": {{}}, "explanation": "Brief explanation"}}
 
-"transform_data": {{"operation": "op_name", ...}}
-
 Examples:
-- "show data" -> {{"intent": "show_data", "params": {{}}, "explanation": "Preview data"}}
+- "how many rows?" -> {{"intent": "chat", "params": {{}}, "explanation": "Question about data"}}
 - "remove age column" -> {{"intent": "transform_data", "params": {{"operation": "drop_column", "column": "age"}}, "explanation": "Remove age"}}
 
-For transform_data, params need: {{"operation": "op_name", ...}}
+For transform_data, params should include: {{"operation": "op_name", ...}}
 Operations: {DATA_OPERATIONS}
 
 CRITICAL: Understanding "remove" vs "filter":
@@ -307,20 +305,27 @@ IMPORTANT: When users ask questions about the data, you MUST use the provided fu
 DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
 
 Available functions:
-- get_row: Get a row matching a condition (column == value)
-- get_value: Get a specific value from a row (filter by one column, get another column's value)
-- get_random_value: Get a random value from a column, or a random row (use for "random X", "give me a random Y" questions)
+- search_rows: SEARCH for rows where a column CONTAINS a keyword (partial/fuzzy match) - USE THIS FIRST when user gives informal names!
+- get_row: Get a row matching a condition (column == value) - requires EXACT match
+- get_value: Get a specific value from a row (filter by one column, get another column's value) - requires EXACT match
+- get_random_value: Get a random value from a column, or a random row
 - calculate_ratio: Calculate ratio between two columns (optionally filtered)
 - get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max)
-- group_by: Group data by a column and count/aggregate (use for "breakdown", "group by", "count by" questions)
+- group_by: Group data by a column and count/aggregate
 - list_columns: List all columns in the dataset
 - get_row_count: Get total row and column count
 
-When answering questions:
-1. First, understand what data is needed
-2. Call the appropriate function(s) to get the actual data
-3. Use the returned values in your answer
-4. Show your calculations if doing math
+CRITICAL WORKFLOW for lookups by name:
+1. When user mentions something by an INFORMAL name (e.g., "3 sum problem", "two sum"), FIRST use search_rows to find the exact match
+2. Look at the search results to find the EXACT value in the dataset
+3. THEN use get_value or get_row with that EXACT value
+
+Example:
+- User asks: "Find similar questions for 3 sum problem"
+- Step 1: search_rows(column="Question Title", keyword="3 sum") -> finds "3Sum" or "Three Sum"
+- Step 2: get_value(column="Similar Questions Text", filter_column="Question Title", filter_value="3Sum")
+
+DO NOT skip the search step! User names are often informal and won't match exactly.
 
 Be accurate and cite the actual data values you retrieve."""
 
@@ -338,13 +343,29 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_rows",
+            "description": "SEARCH for rows where a column CONTAINS a keyword (case-insensitive partial match). USE THIS FIRST when user gives an informal/partial name to find the exact value before using get_row or get_value.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name to search in"},
+                    "keyword": {"type": "string", "description": "Keyword to search for (partial match, case-insensitive)"},
+                    "limit": {"type": "integer", "description": "Max results to return (default 5)"},
+                },
+                "required": ["column", "keyword"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_row",
-            "description": "Get a row from the dataset matching a condition. Use this to find a specific record.",
+            "description": "Get a row matching an EXACT condition. Use search_rows first if you need to find the exact value.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "column": {"type": "string", "description": "Column name to filter by"},
-                    "value": {"type": "string", "description": "Value to match (will be auto-converted to match column type)"},
+                    "value": {"type": "string", "description": "EXACT value to match"},
                 },
                 "required": ["column", "value"],
             },
@@ -354,13 +375,13 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_value",
-            "description": "Get a specific value from a row. Filter by one column, get another column's value.",
+            "description": "Get a specific value from a row using EXACT match. Use search_rows first to find the exact filter_value if user gave an informal name.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "column": {"type": "string", "description": "Column name to get the value from"},
                     "filter_column": {"type": "string", "description": "Column name to filter by"},
-                    "filter_value": {"type": "string", "description": "Value to filter by (will be auto-converted)"},
+                    "filter_value": {"type": "string", "description": "EXACT value to filter by"},
                 },
                 "required": ["column", "filter_column", "filter_value"],
             },
@@ -516,7 +537,65 @@ def _convert_to_native_type(value: Any) -> Any:
 def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a data query function on the DataFrame."""
     try:
-        if function_name == "get_row":
+        if function_name == "search_rows":
+            # Search for rows containing a keyword (partial, case-insensitive match)
+            column = arguments.get("column")
+            keyword = arguments.get("keyword", "")
+            limit = arguments.get("limit", 5)
+            
+            if not column:
+                return {"success": False, "error": "Missing column parameter"}
+            
+            # Case-insensitive column lookup
+            col_match = None
+            for c in df.columns:
+                if c.lower() == column.lower():
+                    col_match = c
+                    break
+            
+            if not col_match:
+                return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
+            
+            col_values = df[col_match].astype(str).str.lower()
+            keyword_lower = keyword.lower()
+            
+            # Try multiple search strategies:
+            # 1. Exact substring match
+            mask = col_values.str.contains(keyword_lower, na=False, regex=False)
+            
+            # 2. If no match, try without spaces (e.g., "3 sum" -> "3sum")
+            if mask.sum() == 0:
+                keyword_nospace = keyword_lower.replace(" ", "")
+                mask = col_values.str.contains(keyword_nospace, na=False, regex=False)
+            
+            # 3. If still no match, try matching all words separately
+            if mask.sum() == 0:
+                words = keyword_lower.split()
+                if len(words) > 1:
+                    # All words must be present (in any order)
+                    mask = pd.Series([True] * len(df), index=df.index)
+                    for word in words:
+                        mask = mask & col_values.str.contains(word, na=False, regex=False)
+            
+            matches = df[mask].head(limit)
+            
+            if len(matches) == 0:
+                return {"success": False, "error": f"No rows found containing '{keyword}' in column '{col_match}'"}
+            
+            # Return matching values from the searched column and row count
+            found_values = matches[col_match].tolist()
+            found_values = [_convert_to_native_type(v) for v in found_values]
+            
+            return {
+                "success": True,
+                "column": col_match,
+                "keyword": keyword,
+                "matches": found_values,
+                "total_matches": int(mask.sum()),
+                "showing": len(found_values),
+            }
+        
+        elif function_name == "get_row":
             # Get a row matching conditions
             column = arguments.get("column")
             value = arguments.get("value")
@@ -740,12 +819,10 @@ async def chat_with_agent(
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
     
-    if not df is None:
+    if df is not None:
         # Use function calling
         try:
             client = get_client()
-            # Function calling requires non-streaming mode - explicitly set to False
-            # Some providers may ignore this, so we catch the error
             response = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=messages,
@@ -757,16 +834,27 @@ async def chat_with_agent(
             )
             
             message = response.choices[0].message
+            print(f"[Chat] Initial response: content={repr(message.content)}, tool_calls={message.tool_calls}")
+            
+            max_iterations = 10  # Prevent infinite loops
+            iteration = 0
             
             # Handle function calls
-            while message.tool_calls:
+            while message.tool_calls and iteration < max_iterations:
+                iteration += 1
                 messages.append(message)
                 
                 # Execute function calls
                 for tool_call in message.tool_calls:
                     function_name = tool_call.function.name
-                    arguments = json.loads(tool_call.function.arguments)
+                    try:
+                        arguments = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    
+                    print(f"[Chat] Calling function: {function_name}({arguments})")
                     result = _execute_data_query(df, function_name, arguments)
+                    print(f"[Chat] Result: {result}")
                     
                     messages.append({
                         "role": "tool",
@@ -786,19 +874,37 @@ async def chat_with_agent(
                 )
                 message = response.choices[0].message
             
-            return message.content or "I couldn't process your request."
+            if message.content:
+                return message.content
+            else:
+                # If no content but we processed functions, summarize the results
+                print(f"[Chat] No content in final message, message={message}")
+                return "I retrieved the data but couldn't generate a response. Please try rephrasing your question."
+                
         except Exception as e:
             error_str = str(e)
-            # If streaming mode error, the model might not support function calling
-            if "streaming mode" in error_str.lower() or "tools are not supported" in error_str.lower():
-                # Fallback: try without tools but with data context
+            print(f"[Chat] Error: {error_str}")
+            
+            # Handle rate limit errors
+            if "rate limit" in error_str.lower() or "429" in error_str:
+                return "**Rate limit reached.** The AI service is temporarily unavailable. Please try again in a few minutes."
+            
+            # If tools not supported, fallback to regular chat with context
+            if "tools" in error_str.lower() or "function" in error_str.lower():
                 context_info = f"\n\nDataset has {len(df)} rows and {len(df.columns)} columns: {', '.join(df.columns.tolist()[:10])}"
                 if len(df.columns) > 10:
                     context_info += f" and {len(df.columns) - 10} more."
                 
-                fallback_messages = messages + [{"role": "user", "content": user_message + context_info}]
-                return await chat_completion(fallback_messages, temperature=0.7)
-            raise
+                fallback_messages = [
+                    {"role": "system", "content": "You are a helpful assistant that answers questions about datasets. Be concise."},
+                    {"role": "user", "content": user_message + context_info}
+                ]
+                try:
+                    return await chat_completion(fallback_messages, temperature=0.7)
+                except Exception:
+                    return "**Rate limit reached.** Please try again later."
+            
+            return f"Error processing request: {error_str}"
     else:
         # No data available, use regular chat
         return await chat_completion(messages, temperature=0.7)

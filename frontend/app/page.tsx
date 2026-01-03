@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { downloadCuratedFile, uploadDataset, sendChatMessage, sendChatMessageStream, getPreview } from "@/lib/api";
+import { downloadCuratedFile, uploadDataset, sendChatMessageStream, getPreview } from "@/lib/api";
 import type { StreamEvent } from "@/lib/api";
 import type { UploadResponse } from "@/types/api";
 import { Button } from "@/components/ui/button";

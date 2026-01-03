@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Dict, List, AsyncGenerator
+from typing import Dict, AsyncGenerator
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -16,7 +15,6 @@ from orchestrator.workflow import (
     Orchestrator,
     execute_transformation,
     execute_transformation_streaming,
-    WorkflowEvent,
     CURATED_STORAGE,
 )
 from llm import classify_intent, chat_with_agent, create_execution_plan
@@ -210,7 +208,6 @@ async def chat(
         columns=columns,
     )
     intent = intent_result.get("intent", "chat")
-    params = intent_result.get("params", {})
 
     response = ""
 
@@ -288,9 +285,8 @@ async def chat_stream(
         # Classify intent
         intent_result = await classify_intent(user_msg, has_data=has_data, columns=columns)
         intent = intent_result.get("intent", "chat")
-        params = intent_result.get("params", {})
 
-        # Handle all transformations with unified LangGraph streaming workflow
+        # Handle transformations with LangGraph streaming
         if intent in ("transform_data", "multi_transform") and has_data:
             data_path = state.curated_path or state.raw_path
             final_message = ""
