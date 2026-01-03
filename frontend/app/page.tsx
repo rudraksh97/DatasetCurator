@@ -32,7 +32,6 @@ const WELCOME_MESSAGE: ChatMessage = {
 export default function Home() {
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<UploadResponse["preview"]>([]);
-  const [issues, setIssues] = useState<UploadResponse["quality_issues"]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [inputMessage, setInputMessage] = useState("");
@@ -115,15 +114,12 @@ export default function Home() {
       const data = await getPreview(sessionId);
       if (data) {
         setPreview(data.preview || []);
-        setIssues(data.quality_issues || []);
       } else {
         setPreview([]);
-        setIssues([]);
       }
     } catch (e) {
       console.error("Failed to fetch preview", e);
       setPreview([]);
-      setIssues([]);
     }
   }, []);
 
@@ -135,7 +131,6 @@ export default function Home() {
     setDatasetId("");
     setActiveSession(null);
     setPreview([]);
-    setIssues([]);
     setMessages([WELCOME_MESSAGE]);
     setInputMessage("");
   };
@@ -176,50 +171,41 @@ export default function Home() {
     setActiveSession(autoId);
     
     // Show upload message
-    addMessage("user", `📎 Uploaded: ${selectedFile.name}`);
+    addMessage("user", `Uploaded: ${selectedFile.name}`);
     
     setIsProcessing(true);
-    addMessage("assistant", "⏳ Processing your dataset... Analyzing schema and checking data quality.");
+    addMessage("assistant", "Processing your dataset...");
 
     try {
       const res = (await uploadDataset(autoId, selectedFile)) as UploadResponse;
       const newPreview = res.preview || [];
-      const newIssues = res.quality_issues || [];
       
       setPreview(newPreview);
-      setIssues(newIssues);
 
-      const cols = newPreview[0] ? Object.keys(newPreview[0]).length : 0;
-      const rows = newPreview.length;
-      const issueCount = newIssues.length;
+      // Use actual counts from backend, fallback to preview dimensions only if not available
+      const cols = res.column_count !== undefined ? res.column_count : (newPreview[0] ? Object.keys(newPreview[0]).length : 0);
+      const rows = res.row_count !== undefined && res.row_count > 0 ? res.row_count : (newPreview.length > 0 ? newPreview.length : 0);
 
-      let summary = `✅ **Dataset loaded!**\n\n`;
-      summary += `📊 **${selectedFile.name}**\n`;
-      summary += `- ${cols} columns, ${rows} rows\n`;
-      
-      if (issueCount > 0) {
-        summary += `- ⚠️ ${issueCount} quality issues found\n\n`;
-        summary += `You can:\n`;
-        summary += `- Say **'show data'** to see the preview\n`;
-        summary += `- Say **'remove column X'** to clean it\n`;
-        summary += `- Say **'download'** to get the file`;
-      } else {
-        summary += `- ✨ No quality issues!\n\n`;
-        summary += `Your data looks clean! You can ask me to transform it or download it.`;
-      }
+      let summary = `**Dataset loaded!**\n\n`;
+      summary += `**${selectedFile.name}**\n`;
+      summary += `- ${cols} columns, ${rows} rows\n\n`;
+      summary += `You can:\n`;
+      summary += `- Say **'show data'** to see the preview\n`;
+      summary += `- Say **'remove column X'** to clean it\n`;
+      summary += `- Say **'download'** to get the file`;
 
       addMessage("assistant", summary);
       
       // Save to localStorage for sidebar
       localStorage.setItem(`chat_history_${autoId}`, JSON.stringify([
         WELCOME_MESSAGE,
-        { id: Date.now().toString(), role: "user", content: `📎 Uploaded: ${selectedFile.name}`, timestamp: new Date() },
+        { id: Date.now().toString(), role: "user", content: `Uploaded: ${selectedFile.name}`, timestamp: new Date() },
         { id: (Date.now() + 1).toString(), role: "assistant", content: summary, timestamp: new Date() },
       ]));
       window.dispatchEvent(new Event("storage"));
       
     } catch (e: any) {
-      addMessage("assistant", `❌ Error processing dataset: ${e.message}`);
+      addMessage("assistant", `Error processing dataset: ${e.message}`);
     } finally {
       setIsProcessing(false);
       // Reset file input
@@ -276,7 +262,6 @@ export default function Home() {
         const data = await getPreview(datasetId);
         if (data) {
           setPreview(data.preview || []);
-          setIssues(data.quality_issues || []);
         }
       } catch {
         // Ignore preview fetch errors
@@ -392,9 +377,6 @@ export default function Home() {
               <div className="data-stats">
                 <Badge variant="secondary">{preview[0] ? Object.keys(preview[0]).length : 0} columns</Badge>
                 <Badge variant="secondary">{preview.length} rows</Badge>
-                <Badge variant={issues.length > 0 ? "warning" : "success"}>
-                  {issues.length} issues
-                </Badge>
               </div>
             )}
           </div>
@@ -428,25 +410,6 @@ export default function Home() {
             </div>
           )}
         </Card>
-
-        {issues.length > 0 && (
-          <Card>
-            <h2>Quality Issues</h2>
-            <ScrollArea className="issues-scroll">
-              {issues.map((issue: any, idx: number) => (
-                <div key={idx} className="issue-item">
-                  <Badge variant={issue.severity === "high" ? "destructive" : issue.severity === "medium" ? "warning" : "secondary"}>
-                    {issue.severity || "medium"}
-                  </Badge>
-                  <div className="issue-details">
-                    <span className="issue-column">{issue.column || "General"}</span>
-                    <span className="issue-desc">{issue.issue || issue.description}</span>
-                  </div>
-                </div>
-              ))}
-            </ScrollArea>
-          </Card>
-        )}
       </div>
       </main>
     </div>

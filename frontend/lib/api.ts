@@ -35,5 +35,5 @@ export async function sendChatMessage(datasetId: string, content: string) {
 export async function getPreview(datasetId: string) {
   const res = await fetch(`${BASE_URL}/preview/${datasetId}`);
   if (res.status === 404) return null;
-  return handle<{ dataset_id: string; preview: Array<Record<string, any>>; quality_issues: Array<any> }>(res);
+  return handle<{ dataset_id: string; preview: Array<Record<string, any>>; row_count?: number; column_count?: number }>(res);
 }

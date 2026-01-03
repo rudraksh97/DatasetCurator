@@ -58,7 +58,7 @@ class DataOperator:
             else:
                 return f"Column '{col}' not found. Available: {list(self.df.columns)}"
         self.df = self.df.drop(columns=[col])
-        return f"✅ Dropped column '{col}'. Now {len(self.df.columns)} columns."
+        return f"Dropped column '{col}'. Now {len(self.df.columns)} columns."
 
     def _drop_columns(self, params: Dict) -> str:
         cols = params.get("columns", [])
@@ -67,7 +67,7 @@ class DataOperator:
             if col in self.df.columns:
                 self.df = self.df.drop(columns=[col])
                 dropped.append(col)
-        return f"✅ Dropped {len(dropped)} columns: {dropped}"
+        return f"Dropped {len(dropped)} columns: {dropped}"
 
     def _rename_column(self, params: Dict) -> str:
         old_name = params.get("old_name")
@@ -75,7 +75,7 @@ class DataOperator:
         if old_name not in self.df.columns:
             return f"Column '{old_name}' not found."
         self.df = self.df.rename(columns={old_name: new_name})
-        return f"✅ Renamed '{old_name}' to '{new_name}'."
+        return f"Renamed '{old_name}' to '{new_name}'."
 
     def _drop_nulls(self, params: Dict) -> str:
         col = params.get("column")
@@ -87,7 +87,7 @@ class DataOperator:
         else:
             self.df = self.df.dropna()
         after = len(self.df)
-        return f"✅ Removed {before - after} rows with null values. Now {after} rows."
+        return f"Removed {before - after} rows with null values. Now {after} rows."
 
     def _fill_nulls(self, params: Dict) -> str:
         col = params.get("column")
@@ -109,15 +109,15 @@ class DataOperator:
                     self.df[col] = self.df[col].fillna(method=method)
                 else:
                     self.df = self.df.fillna(method=method)
-                return f"✅ Filled nulls using {method}."
+                return f"Filled nulls using {method}."
         
         if col:
             count = self.df[col].isna().sum()
             self.df[col] = self.df[col].fillna(value)
-            return f"✅ Filled {count} null values in '{col}' with '{value}'."
+            return f"Filled {count} null values in '{col}' with '{value}'."
         else:
             self.df = self.df.fillna(value)
-            return f"✅ Filled all null values with '{value}'."
+            return f"Filled all null values with '{value}'."
 
     def _drop_duplicates(self, params: Dict) -> str:
         cols = params.get("columns")
@@ -128,7 +128,7 @@ class DataOperator:
         else:
             self.df = self.df.drop_duplicates(keep=keep)
         after = len(self.df)
-        return f"✅ Removed {before - after} duplicate rows. Now {after} rows."
+        return f"Removed {before - after} duplicate rows. Now {after} rows."
 
     def _filter_rows(self, params: Dict) -> str:
         col = params.get("column")
@@ -184,7 +184,7 @@ class DataOperator:
             self.df = self.df[self.df[col].astype(str).str.contains(str(value), case=False, na=False)]
         
         after = len(self.df)
-        return f"✅ Filtered to {after} rows (removed {before - after})."
+        return f"Filtered to {after} rows (removed {before - after})."
 
     def _drop_rows(self, params: Dict) -> str:
         col = params.get("column")
@@ -230,7 +230,7 @@ class DataOperator:
             self.df = self.df[~self.df[col].astype(str).str.contains(str(value), case=False, na=False)]
         
         after = len(self.df)
-        return f"✅ Dropped {before - after} rows. Now {after} rows."
+        return f"Dropped {before - after} rows. Now {after} rows."
 
     def _convert_type(self, params: Dict) -> str:
         col = params.get("column")
@@ -258,9 +258,9 @@ class DataOperator:
                 self.df[col] = pd.to_datetime(self.df[col], errors="coerce")
             else:
                 self.df[col] = self.df[col].astype(dtype)
-            return f"✅ Converted '{col}' to {dtype}."
+            return f"Converted '{col}' to {dtype}."
         except Exception as e:
-            return f"❌ Could not convert '{col}' to {dtype}: {str(e)}"
+            return f"Error: Could not convert '{col}' to {dtype}: {str(e)}"
 
     def _strip_whitespace(self, params: Dict) -> str:
         col = params.get("column")
@@ -269,25 +269,25 @@ class DataOperator:
                 return f"Column '{col}' not found."
             if self.df[col].dtype == "object":
                 self.df[col] = self.df[col].str.strip()
-            return f"✅ Stripped whitespace from '{col}'."
+            return f"Stripped whitespace from '{col}'."
         else:
             for c in self.df.select_dtypes(include=["object"]).columns:
                 self.df[c] = self.df[c].str.strip()
-            return "✅ Stripped whitespace from all text columns."
+            return "Stripped whitespace from all text columns."
 
     def _lowercase(self, params: Dict) -> str:
         col = params.get("column")
         if col not in self.df.columns:
             return f"Column '{col}' not found."
         self.df[col] = self.df[col].astype(str).str.lower()
-        return f"✅ Converted '{col}' to lowercase."
+        return f"Converted '{col}' to lowercase."
 
     def _uppercase(self, params: Dict) -> str:
         col = params.get("column")
         if col not in self.df.columns:
             return f"Column '{col}' not found."
         self.df[col] = self.df[col].astype(str).str.upper()
-        return f"✅ Converted '{col}' to uppercase."
+        return f"Converted '{col}' to uppercase."
 
     def _replace_values(self, params: Dict) -> str:
         col = params.get("column")
@@ -299,10 +299,10 @@ class DataOperator:
                 return f"Column '{col}' not found."
             count = (self.df[col] == old_value).sum()
             self.df[col] = self.df[col].replace(old_value, new_value)
-            return f"✅ Replaced {count} occurrences of '{old_value}' with '{new_value}' in '{col}'."
+            return f"Replaced {count} occurrences of '{old_value}' with '{new_value}' in '{col}'."
         else:
             self.df = self.df.replace(old_value, new_value)
-            return f"✅ Replaced all '{old_value}' with '{new_value}'."
+            return f"Replaced all '{old_value}' with '{new_value}'."
 
     def _sort(self, params: Dict) -> str:
         col = params.get("column")
@@ -313,7 +313,7 @@ class DataOperator:
         
         self.df = self.df.sort_values(by=col, ascending=ascending)
         order = "ascending" if ascending else "descending"
-        return f"✅ Sorted by '{col}' ({order})."
+        return f"Sorted by '{col}' ({order})."
 
     def _keep_columns(self, params: Dict) -> str:
         cols = params.get("columns", [])
@@ -321,7 +321,7 @@ class DataOperator:
         if not valid_cols:
             return f"None of the specified columns found."
         self.df = self.df[valid_cols]
-        return f"✅ Kept {len(valid_cols)} columns: {valid_cols}"
+        return f"Kept {len(valid_cols)} columns: {valid_cols}"
 
     def _add_column(self, params: Dict) -> str:
         name = params.get("name")
@@ -343,13 +343,13 @@ class DataOperator:
                 self.df[name] = self.df[from_column].astype(str).str.len()
             else:
                 self.df[name] = self.df[from_column]
-            return f"✅ Added column '{name}' based on '{from_column}'."
+            return f"Added column '{name}' based on '{from_column}'."
         elif value is not None:
             self.df[name] = value
-            return f"✅ Added column '{name}' with value '{value}'."
+            return f"Added column '{name}' with value '{value}'."
         else:
             self.df[name] = None
-            return f"✅ Added empty column '{name}'."
+            return f"Added empty column '{name}'."
 
     def _add_conditional_column(self, params: Dict) -> str:
         name = params.get("name")
@@ -423,9 +423,9 @@ class DataOperator:
                     # For ranges like <30, 30-60, >60, process in order: <30, then 30-60, then >60
                     default_val = params.get("default_value", "Unknown")
                     self.df[name] = np.select(cond_list, choice_list, default=default_val)
-                    return f"✅ Added column '{name}' with {len(conditions)} conditional ranges."
+                    return f"Added column '{name}' with {len(conditions)} conditional ranges."
                 else:
-                    return "❌ No valid conditions provided."
+                    return "Error: No valid conditions provided."
             
             # Single condition (backward compatibility)
             if operator == ">":
@@ -447,9 +447,9 @@ class DataOperator:
             if true_value is not True or false_value is not False:
                 self.df[name] = self.df[name].map({True: true_value, False: false_value})
             
-            return f"✅ Added column '{name}' based on condition: {condition_col} {operator} {threshold}."
+            return f"Added column '{name}' based on condition: {condition_col} {operator} {threshold}."
         except Exception as e:
-            return f"❌ Error creating conditional column: {str(e)}"
+            return f"Error: Error creating conditional column: {str(e)}"
 
     def get_result(self) -> pd.DataFrame:
         return self.df

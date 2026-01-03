@@ -148,23 +148,22 @@ def get_cached_results(dataset_id: str) -> Optional[List[Dict[str, Any]]]:
 def format_search_results(results: List[Dict[str, Any]]) -> str:
     """Format results as a numbered list for the user."""
     if not results:
-        return "❌ No datasets found. Try simpler keywords like 'weather data' or 'stock prices'."
+        return "No datasets found. Try simpler keywords like 'weather data' or 'stock prices'."
     
-    output = "🔍 **Found these datasets:**\n\n"
+    output = "**Found these datasets:**\n\n"
     
     for i, r in enumerate(results, 1):
-        emoji = "🐙" if r["source"] == "github" else "📊" if r["source"] == "kaggle" else "🌐"
         csv_badge = " `CSV`" if r["is_direct_csv"] else ""
         title = r["title"][:55] + "..." if len(r["title"]) > 55 else r["title"]
         
-        output += f"**{i}.** {emoji}{csv_badge} {title}\n"
+        output += f"**{i}.**{csv_badge} {title}\n"
         
         if r["description"]:
             desc = r["description"][:70] + "..." if len(r["description"]) > 70 else r["description"]
             output += f"   _{desc}_\n"
         output += "\n"
     
-    output += "💡 *Reply with a number (e.g., '1') to load that dataset.*"
+    output += "*Reply with a number (e.g., '1') to load that dataset.*"
     
     return output
 
@@ -301,7 +300,7 @@ async def download_from_search_result(result: Dict[str, Any], save_path: Path) -
     if not content and result["source"] == "kaggle":
         return {
             "success": False,
-            "error": "Kaggle requires login. Please download manually and upload via 📎.",
+            "error": "Kaggle requires login. Please download manually and upload via the attachment button.",
         }
     
     # No content found

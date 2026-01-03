@@ -69,17 +69,23 @@ async def upload_dataset(
         raise HTTPException(status_code=400, detail="Failed to save file")
 
     state = await orchestrator.run_pipeline(session, dataset_id, target_path)
+    
+    # Get actual row and column counts from the full file
+    df = pd.read_csv(target_path)
+    row_count = int(len(df))
+    column_count = int(len(df.columns))
 
     return {
         "dataset_id": dataset_id,
-        "quality_issues": state.quality_issues,
         "preview": _preview_df(target_path),
+        "row_count": row_count,
+        "column_count": column_count,
     }
 
 
 @router.get("/preview/{dataset_id}")
 async def get_preview(dataset_id: str, session: AsyncSession = Depends(get_session)) -> Dict[str, object]:
-    """Get data preview and quality issues."""
+    """Get data preview."""
     try:
         state = await orchestrator._get_state(session, dataset_id)
     except ValueError:
@@ -87,10 +93,22 @@ async def get_preview(dataset_id: str, session: AsyncSession = Depends(get_sessi
 
     data_path = state.curated_path or state.raw_path
     
+    # Get actual row and column counts
+    row_count = 0
+    column_count = 0
+    if data_path:
+        try:
+            df = pd.read_csv(Path(data_path))
+            row_count = len(df)
+            column_count = len(df.columns)
+        except Exception:
+            pass
+    
     return {
         "dataset_id": dataset_id,
         "preview": _preview_df(Path(data_path)) if data_path else [],
-        "quality_issues": state.quality_issues,
+        "row_count": row_count,
+        "column_count": column_count,
     }
 
 
@@ -156,7 +174,7 @@ async def chat(
             cache_search_results(dataset_id, results)
             response += format_search_results(results)
         else:
-            response += "❌ No datasets found. Try different keywords or upload a CSV file."
+            response += "No datasets found. Try different keywords or upload a CSV file."
 
     elif intent == "select_result":
         # Ensure selection is an integer
@@ -171,22 +189,22 @@ async def chat(
             response = f"Please select a number between 1 and {len(cached_results)}."
         else:
             result = cached_results[selection - 1]
-            response = f"⏳ Downloading **{result['title']}**...\n\n"
+            response = f"Downloading **{result['title']}**...\n\n"
             
             save_path = Path("storage/raw") / f"{dataset_id}_search.csv"
             download_result = await download_from_search_result(result, save_path)
             
             if download_result["success"]:
                 state = await orchestrator.run_pipeline(session, dataset_id, save_path)
-                response = f"✅ **Loaded: {download_result['name']}**\n\n"
-                response += f"📊 {download_result['rows']} rows, {download_result['columns']} columns\n"
+                response = f"**Loaded: {download_result['name']}**\n\n"
+                response += f"{download_result['rows']} rows, {download_result['columns']} columns\n"
                 response += f"Columns: `{', '.join(download_result['column_names'][:10])}`"
                 if len(download_result['column_names']) > 10:
                     response += f" + {len(download_result['column_names']) - 10} more"
                 response += "\n\nSay **'show data'** to preview, or select another result (1-8)."
                 # Keep cache so user can try different results
             else:
-                response = f"❌ {download_result['error']}\n\nTry selecting a different result or search again."
+                response = f"{download_result['error']}\n\nTry selecting a different result or search again."
 
     elif intent == "show_data":
         if not has_data:
@@ -196,16 +214,16 @@ async def chat(
         else:
             try:
                 df = pd.read_csv(state.curated_path or state.raw_path)
-                response = f"📊 **Preview** ({len(df)} rows, {len(df.columns)} cols)\n\n"
+                response = f"**Preview** ({len(df)} rows, {len(df.columns)} cols)\n\n"
                 response += _df_to_markdown(df, max_rows=10)
                 if len(df) > 10:
                     response += f"\n\n*Showing first 10 of {len(df)} rows.*"
             except Exception as e:
-                response = f"❌ Error: {str(e)}"
+                response = f"Error: {str(e)}"
     
     elif intent == "transform_data":
         if not has_data:
-            response = "📂 **No data to transform.** Load a dataset first!"
+            response = "**No data to transform.** Load a dataset first!"
         else:
             operation = params.pop("operation", None)
             if not operation:
@@ -232,12 +250,12 @@ async def chat(
                         })
                         
                         explanation = intent_result.get("explanation", "Applied transformation")
-                        response = f"🔧 **{explanation}**\n\n{msg}\n\n{operator.get_summary()}"
+                        response = f"**{explanation}**\n\n{msg}\n\n{operator.get_summary()}"
                         response += f"\n\n**Preview:**\n\n{_df_to_markdown(updated_df, 5)}"
                     else:
-                        response = f"⚠️ {msg}\n\n**Available columns:** {', '.join(columns)}"
+                        response = f"{msg}\n\n**Available columns:** {', '.join(columns)}"
                 except Exception as e:
-                    response = f"❌ Error: {str(e)}"
+                    response = f"Error: {str(e)}"
     
     else:  # chat
         if not has_data:
@@ -246,7 +264,7 @@ async def chat(
             response += "- *'find datasets about climate'*\n"
             response += "- Upload a CSV using the attachment button"
         else:
-            context = {"columns": columns, "issues": state.quality_issues[:3] if state.quality_issues else []}
+            context = {"columns": columns}
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
             data_path = state.curated_path or state.raw_path
             try:

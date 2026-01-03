@@ -17,7 +17,6 @@ class DatasetState(BaseModel):
     raw_path: Optional[Path] = None
     curated_path: Optional[Path] = None
     schema: Optional[Dict[str, Any]] = None
-    quality_issues: List[Dict[str, Any]] = Field(default_factory=list)
     transformation_log: List[Dict[str, Any]] = Field(default_factory=list)
     chat_history: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -28,7 +27,6 @@ class DatasetState(BaseModel):
             "raw_path": str(self.raw_path) if self.raw_path else None,
             "curated_path": str(self.curated_path) if self.curated_path else None,
             "schema": self.schema,
-            "quality_issues": self.quality_issues,
             "transformation_log": self.transformation_log,
             "chat_history": self.chat_history,
         }
@@ -41,7 +39,6 @@ class DatasetState(BaseModel):
             raw_path=Path(record.raw_path) if record.raw_path else None,
             curated_path=Path(record.curated_path) if record.curated_path else None,
             schema=record.schema,
-            quality_issues=record.quality_issues or [],
             transformation_log=record.transformation_log or [],
             chat_history=record.chat_history or [],
         )

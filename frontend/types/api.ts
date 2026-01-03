@@ -1,8 +1,8 @@
 export interface UploadResponse {
   dataset_id: string;
-  quality_issues: Array<Record<string, unknown>>;
-  curated_path: string | null;
   preview: Array<Record<string, unknown>>;
+  row_count?: number;
+  column_count?: number;
 }
 
 export interface HealthResponse {
