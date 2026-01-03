@@ -190,9 +190,9 @@ async def chat(
 
     elif intent == "show_data":
         if not has_data:
-            response = "📂 **No data loaded.**\n\n"
-            response += "- 🔍 **Search**: *'find weather data'*\n"
-            response += "- 📎 **Upload**: Use the attachment button"
+            response = "**No data loaded.**\n\n"
+            response += "- **Search**: *'find weather data'*\n"
+            response += "- **Upload**: Use the attachment button"
         else:
             try:
                 df = pd.read_csv(state.curated_path or state.raw_path)
@@ -243,8 +243,8 @@ async def chat(
         if not has_data:
             response = "**Welcome!** I can help you find and clean datasets.\n\n"
             response += "**Try:**\n"
-            response += "- 🔍 *'find datasets about climate'*\n"
-            response += "- 📎 Upload a CSV using the attachment button"
+            response += "- *'find datasets about climate'*\n"
+            response += "- Upload a CSV using the attachment button"
         else:
             context = {"columns": columns, "issues": state.quality_issues[:3] if state.quality_issues else []}
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]

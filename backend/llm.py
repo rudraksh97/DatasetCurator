@@ -146,6 +146,15 @@ Examples for transform_data:
 - "remove California" → {{"operation": "drop_rows", "column": "state", "operator": "==", "value": "California"}}
 - "keep only rows where age > 18" → {{"operation": "filter_rows", "column": "age", "operator": ">", "value": 18}}
 - "drop nulls" → {{"operation": "drop_nulls"}}
+- "add column difficulty where age < 18 is child" → {{"operation": "add_conditional_column", "name": "difficulty", "condition_column": "age", "operator": "<", "threshold": 18, "true_value": "child", "false_value": "adult"}}
+- "add column level where score < 30 is Hard and 30 to 60 is Medium and > 60 is Easy" → {{"operation": "add_conditional_column", "name": "level", "condition_column": "score", "conditions": [{{"operator": "<", "value": 30, "result": "Hard"}}, {{"operator": "between", "value1": 30, "value2": 60, "result": "Medium"}}, {{"operator": ">", "value": 60, "result": "Easy"}}]}}
+
+IMPORTANT for add_conditional_column with multiple ranges:
+- When user says "X to Y" or "between X and Y", use {{"operator": "between", "value1": X, "value2": Y, "result": "Value"}}
+- When user says "above X" or "> X", use {{"operator": ">", "value": X, "result": "Value"}}
+- When user says "below X" or "< X", use {{"operator": "<", "value": X, "result": "Value"}}
+- Always include ALL conditions in the "conditions" array, ordered from lowest to highest threshold
+- The column name should be descriptive (e.g., "Difficulty Level", "Category", "Status")
 
 ONLY respond with JSON."""
 
@@ -328,11 +337,108 @@ def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[st
                     "count": _convert_to_native_type(df[column].count()),
                     "nulls": _convert_to_native_type(df[column].isna().sum()),
                     "mean": _convert_to_native_type(df[column].mean()) if pd.api.types.is_numeric_dtype(df[column]) else None,
+                    "variance": _convert_to_native_type(df[column].var()) if pd.api.types.is_numeric_dtype(df[column]) else None,
+                    "std": _convert_to_native_type(df[column].std()) if pd.api.types.is_numeric_dtype(df[column]) else None,
                     "min": _convert_to_native_type(df[column].min()) if pd.api.types.is_numeric_dtype(df[column]) else None,
                     "max": _convert_to_native_type(df[column].max()) if pd.api.types.is_numeric_dtype(df[column]) else None,
                 }
                 return {"success": True, "statistics": stats}
             return {"success": False, "error": "Missing column parameter"}
+        
+        elif function_name == "group_by":
+            # Group by a column and optionally aggregate
+            column = arguments.get("column")
+            agg_function = arguments.get("aggregation", "count")  # count, sum, mean, etc.
+            agg_column = arguments.get("aggregation_column")  # Optional: column to aggregate
+            
+            if not column:
+                return {"success": False, "error": "Missing column parameter"}
+            
+            if column not in df.columns:
+                # Try case-insensitive match
+                matches = [c for c in df.columns if c.lower() == column.lower()]
+                if matches:
+                    column = matches[0]
+                else:
+                    return {"success": False, "error": f"Column '{column}' not found"}
+            
+            try:
+                grouped = df.groupby(column)
+                
+                if agg_function == "count":
+                    result = grouped.size().to_dict()
+                elif agg_function == "sum" and agg_column:
+                    if agg_column not in df.columns:
+                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
+                    result = grouped[agg_column].sum().to_dict()
+                elif agg_function == "mean" and agg_column:
+                    if agg_column not in df.columns:
+                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
+                    result = grouped[agg_column].mean().to_dict()
+                elif agg_function == "min" and agg_column:
+                    if agg_column not in df.columns:
+                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
+                    result = grouped[agg_column].min().to_dict()
+                elif agg_function == "max" and agg_column:
+                    if agg_column not in df.columns:
+                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
+                    result = grouped[agg_column].max().to_dict()
+                else:
+                    result = grouped.size().to_dict()
+                
+                # Convert to native types
+                result = {str(k): _convert_to_native_type(v) for k, v in result.items()}
+                
+                return {
+                    "success": True,
+                    "group_by": column,
+                    "aggregation": agg_function,
+                    "results": result,
+                    "total_groups": len(result)
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        
+        elif function_name == "get_random_value":
+            # Get a random value from a column, or a random row
+            column = arguments.get("column")
+            
+            if len(df) == 0:
+                return {"success": False, "error": "Dataset is empty"}
+            
+            try:
+                if column:
+                    # Get random value from specific column
+                    if column not in df.columns:
+                        # Try case-insensitive match
+                        matches = [c for c in df.columns if c.lower() == column.lower()]
+                        if matches:
+                            column = matches[0]
+                        else:
+                            return {"success": False, "error": f"Column '{column}' not found"}
+                    
+                    # Filter out null values
+                    non_null_values = df[column].dropna()
+                    if len(non_null_values) == 0:
+                        return {"success": False, "error": f"Column '{column}' has no non-null values"}
+                    
+                    random_value = non_null_values.sample(n=1).iloc[0]
+                    return {
+                        "success": True,
+                        "column": column,
+                        "value": _convert_to_native_type(random_value)
+                    }
+                else:
+                    # Get random row
+                    random_row = df.sample(n=1).iloc[0]
+                    row_data = random_row.to_dict()
+                    row_data = {k: _convert_to_native_type(v) for k, v in row_data.items()}
+                    return {
+                        "success": True,
+                        "row": row_data
+                    }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
         
         elif function_name == "list_columns":
             return {"success": True, "columns": list(df.columns), "row_count": int(len(df))}
@@ -363,8 +469,10 @@ DO NOT rely on your training data or make up values. Always call the appropriate
 Available functions:
 - get_row: Get a row matching a condition (column == value)
 - get_value: Get a specific value from a row (filter by one column, get another column's value)
+- get_random_value: Get a random value from a column, or a random row (use for "random X", "give me a random Y" questions)
 - calculate_ratio: Calculate ratio between two columns (optionally filtered)
-- get_statistics: Get statistics for a column (count, nulls, mean, min, max)
+- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max)
+- group_by: Group data by a column and count/aggregate (use for "breakdown", "group by", "count by" questions)
 - list_columns: List all columns in the dataset
 - get_row_count: Get total row and column count
 
@@ -417,6 +525,20 @@ Be accurate and cite the actual data values you retrieve."""
         {
             "type": "function",
             "function": {
+                "name": "get_random_value",
+                "description": "Get a random value from a column, or a random row. Use for questions like 'give me a random X', 'show me a random Y', 'random question text'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string", "description": "Optional: Column name to get a random value from. If not provided, returns a random row."}
+                    },
+                    "required": []
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "calculate_ratio",
                 "description": "Calculate ratio between two columns. Optionally filter by a condition first.",
                 "parameters": {
@@ -435,11 +557,27 @@ Be accurate and cite the actual data values you retrieve."""
             "type": "function",
             "function": {
                 "name": "get_statistics",
-                "description": "Get statistics for a column (count, nulls, mean, min, max)",
+                "description": "Get statistics for a column (count, nulls, mean, variance, std, min, max)",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "column": {"type": "string", "description": "Column name"}
+                    },
+                    "required": ["column"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "group_by",
+                "description": "Group data by a column and count or aggregate. Use this for questions like 'breakdown by X', 'group by Y', 'count by Z', 'how many of each X'.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "column": {"type": "string", "description": "Column name to group by"},
+                        "aggregation": {"type": "string", "description": "Aggregation function: 'count' (default), 'sum', 'mean', 'min', 'max'"},
+                        "aggregation_column": {"type": "string", "description": "Optional: Column to aggregate when using sum/mean/min/max"}
                     },
                     "required": ["column"]
                 }
@@ -478,6 +616,7 @@ Be accurate and cite the actual data values you retrieve."""
             tool_choice="auto",
             temperature=0.7,
             max_tokens=2048,
+            stream=False,  # Function calling requires non-streaming mode
         )
         
         message = response.choices[0].message
@@ -506,6 +645,7 @@ Be accurate and cite the actual data values you retrieve."""
                 tool_choice="auto",
                 temperature=0.7,
                 max_tokens=2048,
+                stream=False,  # Function calling requires non-streaming mode
             )
             message = response.choices[0].message
         

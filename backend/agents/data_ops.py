@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+import numpy as np
 import pandas as pd
 
 
@@ -357,14 +358,76 @@ class DataOperator:
         threshold = params.get("threshold")
         true_value = params.get("true_value", True)
         false_value = params.get("false_value", False)
+        conditions = params.get("conditions")  # List of conditions for ranges
         
         if not name or not condition_col:
             return "Column name and condition column are required."
         
         if condition_col not in self.df.columns:
-            return f"Column '{condition_col}' not found."
+            # Try case-insensitive match
+            matches = [c for c in self.df.columns if c.lower() == condition_col.lower()]
+            if matches:
+                condition_col = matches[0]
+            else:
+                return f"Column '{condition_col}' not found."
         
         try:
+            # Support multiple conditions/ranges
+            # Handle cases where conditions might be a string representation
+            if isinstance(conditions, str):
+                try:
+                    import json
+                    conditions = json.loads(conditions)
+                except:
+                    pass
+            
+            if conditions and isinstance(conditions, list):
+                # Multiple conditions/ranges (e.g., < 30, 30-60, > 60)
+                # Build conditions and choices for np.select
+                cond_list = []
+                choice_list = []
+                
+                for cond in conditions:
+                    op = cond.get("operator", ">")
+                    val = cond.get("value")
+                    result_val = cond.get("result")
+                    
+                    if op == "<":
+                        cond_list.append(self.df[condition_col] < val)
+                    elif op == "<=":
+                        cond_list.append(self.df[condition_col] <= val)
+                    elif op == ">":
+                        cond_list.append(self.df[condition_col] > val)
+                    elif op == ">=":
+                        cond_list.append(self.df[condition_col] >= val)
+                    elif op == "==":
+                        cond_list.append(self.df[condition_col] == val)
+                    elif op == "!=":
+                        cond_list.append(self.df[condition_col] != val)
+                    elif op == "between" or op == "range":
+
+                        val1 = cond.get("value1") or cond.get("min")
+                        val2 = cond.get("value2") or cond.get("max")
+                        if val1 is not None and val2 is not None:
+                            cond_list.append((self.df[condition_col] >= val1) & (self.df[condition_col] <= val2))
+                        else:
+                            continue
+                    else:
+                        continue
+                    
+                    choice_list.append(result_val)
+                
+                if cond_list and choice_list:
+                    # Use np.select to apply conditions
+                    # Order matters: more specific conditions should come first
+                    # For ranges like <30, 30-60, >60, process in order: <30, then 30-60, then >60
+                    default_val = params.get("default_value", "Unknown")
+                    self.df[name] = np.select(cond_list, choice_list, default=default_val)
+                    return f"✅ Added column '{name}' with {len(conditions)} conditional ranges."
+                else:
+                    return "❌ No valid conditions provided."
+            
+            # Single condition (backward compatibility)
             if operator == ">":
                 self.df[name] = self.df[condition_col] > threshold
             elif operator == "<":
