@@ -171,6 +171,10 @@ async def semantic_search(
     # Generate query embedding
     query_embedding = await generate_embedding(query)
     
+    # Format embedding as PostgreSQL array string for pgvector
+    # pgvector expects array format: '[0.1, 0.2, ...]'
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    
     # Search using cosine similarity
     # pgvector uses <=> for cosine distance (lower is more similar)
     result = await session.execute(
@@ -179,15 +183,15 @@ async def semantic_search(
                 row_index,
                 content,
                 metadata,
-                1 - (embedding <=> :query_embedding::vector) as similarity
+                1 - (embedding <=> CAST(:query_embedding AS vector)) as similarity
             FROM dataset_embeddings
             WHERE dataset_id = :dataset_id
-            ORDER BY embedding <=> :query_embedding::vector
+            ORDER BY embedding <=> CAST(:query_embedding AS vector)
             LIMIT :limit
         """),
         {
             "dataset_id": dataset_id,
-            "query_embedding": str(query_embedding),
+            "query_embedding": embedding_str,
             "limit": limit,
         }
     )

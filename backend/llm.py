@@ -18,7 +18,7 @@ load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "meta-llama/llama-3.1-405b-instruct:free"
+DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 # ---- Types -----------------------------------------------------------------
 Message = Dict[str, Any]
@@ -232,7 +232,13 @@ async def create_execution_plan(
         if result and "steps" in result:
             return result
     except Exception as e:
-        print(f"Planning error: {e}")
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, provide helpful message
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            print(f"Planning error: Model requires OpenRouter privacy settings")
+        else:
+            print(f"Planning error: {e}")
     
     # Fallback: return empty plan
     return {"is_multi_step": False, "steps": []}
@@ -307,26 +313,32 @@ CHAT_SYSTEM_TEMPLATE = """You are the Dataset Curator, an AI that helps answer q
 IMPORTANT: When users ask questions about the data, you MUST use the provided functions to query the actual dataset.
 DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
 
+CRITICAL MULTI-STEP WORKFLOW for complex queries:
+1. FIRST: Identify columns mentioned in the query using find_columns or list_columns
+2. SECOND: If the query has conditions (e.g., "people doing bsc", "where X > Y"), use search_rows or get_statistics with filters to find matching rows
+3. THIRD: Perform the calculation (mean, sum, count, etc.) on the filtered data
+
+Example: "what is avg study hours of people doing bsc"
+- Step 1: find_columns(keywords=["study hours", "bsc", "degree"]) -> finds "study_hours" and "degree" columns
+- Step 2: search_rows(column="degree", keyword="bsc") -> finds exact values like "BSc", "B.Sc", etc.
+- Step 3: get_statistics(column="study_hours", filter_column="degree", filter_value="BSc") -> calculates mean on filtered data
+
 Available functions:
-- search_rows: SEARCH for rows where a column CONTAINS a keyword (partial/fuzzy match) - USE THIS FIRST when user gives informal names!
+- find_columns: Find columns that match keywords (USE THIS FIRST to identify relevant columns from the query)
+- search_rows: SEARCH for rows where a column CONTAINS a keyword (partial/fuzzy match) - USE THIS to find exact values for filtering!
 - get_row: Get a row matching a condition (column == value) - requires EXACT match
 - get_value: Get a specific value from a row (filter by one column, get another column's value) - requires EXACT match
 - get_random_value: Get a random value from a column, or a random row
 - calculate_ratio: Calculate ratio between two columns (optionally filtered)
-- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max)
+- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max) - SUPPORTS FILTERING!
 - group_by: Group data by a column and count/aggregate
 - list_columns: List all columns in the dataset
 - get_row_count: Get total row and column count
 
 CRITICAL WORKFLOW for lookups by name:
-1. When user mentions something by an INFORMAL name (e.g., "3 sum problem", "two sum"), FIRST use search_rows to find the exact match
+1. When user mentions something by an INFORMAL name (e.g., "3 sum problem", "two sum", "bsc"), FIRST use search_rows to find the exact match
 2. Look at the search results to find the EXACT value in the dataset
-3. THEN use get_value or get_row with that EXACT value
-
-Example:
-- User asks: "Find similar questions for 3 sum problem"
-- Step 1: search_rows(column="Question Title", keyword="3 sum") -> finds "3Sum" or "Three Sum"
-- Step 2: get_value(column="Similar Questions Text", filter_column="Question Title", filter_value="3Sum")
+3. THEN use get_value, get_row, or get_statistics with that EXACT value
 
 DO NOT skip the search step! User names are often informal and won't match exactly.
 
@@ -343,6 +355,20 @@ def _build_chat_system_prompt(columns: Optional[List[str]] = None) -> str:
 
 # Tool schema for OpenAI function calling
 CHAT_TOOLS: List[Dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "find_columns",
+            "description": "Find columns in the dataset that match given keywords. USE THIS FIRST when the user mentions column names in their query (e.g., 'study hours', 'degree', 'bsc'). This helps identify which columns to use for filtering and calculations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keywords": {"type": "array", "items": {"type": "string"}, "description": "List of keywords to search for in column names (e.g., ['study hours', 'degree', 'bsc'])"},
+                },
+                "required": ["keywords"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -425,11 +451,13 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_statistics",
-            "description": "Get statistics for a column (count, nulls, mean, variance, std, min, max)",
+            "description": "Get statistics for a column (count, nulls, mean, variance, std, min, max). SUPPORTS FILTERING: Use filter_column and filter_value to calculate statistics on a subset of data (e.g., average study hours for people doing BSc).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "column": {"type": "string", "description": "Column name"}
+                    "column": {"type": "string", "description": "Column name to calculate statistics for"},
+                    "filter_column": {"type": "string", "description": "Optional: Column to filter by (e.g., 'degree' or 'program')"},
+                    "filter_value": {"type": "string", "description": "Optional: Value to filter by (e.g., 'BSc' or 'bsc'). Use search_rows first to find the exact value if needed."},
                 },
                 "required": ["column"],
             },
@@ -498,7 +526,13 @@ async def classify_intent(
         if result and "intent" in result:
             return result
     except Exception as e:
-        print(f"Intent classification error: {e}")
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, don't spam logs
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            print(f"Intent classification error: Model requires privacy settings")
+        else:
+            print(f"Intent classification error: {e}")
     
     return {"intent": "chat", "params": {}, "explanation": "Could not classify intent"}
 
@@ -550,7 +584,40 @@ def _convert_to_native_type(value: Any) -> Any:
 def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a data query function on the DataFrame."""
     try:
-        if function_name == "search_rows":
+        if function_name == "find_columns":
+            # Find columns that match keywords
+            keywords = arguments.get("keywords", [])
+            if not keywords:
+                return {"success": False, "error": "Missing keywords parameter"}
+            
+            matched_columns = []
+            keyword_lower = [k.lower() for k in keywords]
+            
+            for col in df.columns:
+                col_lower = col.lower()
+                # Check if any keyword matches the column name (partial match)
+                for keyword in keyword_lower:
+                    if keyword in col_lower or col_lower in keyword:
+                        matched_columns.append({
+                            "column": col,
+                            "matched_keyword": keyword,
+                        })
+                        break  # Only add once per column
+            
+            if not matched_columns:
+                return {
+                    "success": False,
+                    "error": f"No columns found matching keywords: {', '.join(keywords)}. Available columns: {', '.join(df.columns.tolist())}"
+                }
+            
+            return {
+                "success": True,
+                "keywords": keywords,
+                "matched_columns": matched_columns,
+                "column_names": [c["column"] for c in matched_columns],
+            }
+        
+        elif function_name == "search_rows":
             # Search for rows containing a keyword (partial, case-insensitive match)
             column = arguments.get("column")
             keyword = arguments.get("keyword", "")
@@ -693,22 +760,75 @@ def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[st
             return {"success": False, "error": "Missing numerator or denominator column"}
         
         elif function_name == "get_statistics":
-            # Get basic statistics
+            # Get basic statistics with optional filtering
             column = arguments.get("column")
-            if column:
-                if column not in df.columns:
-                    return {"success": False, "error": f"Column '{column}' not found"}
-                stats = {
-                    "count": _convert_to_native_type(df[column].count()),
-                    "nulls": _convert_to_native_type(df[column].isna().sum()),
-                    "mean": _convert_to_native_type(df[column].mean()) if pd.api.types.is_numeric_dtype(df[column]) else None,
-                    "variance": _convert_to_native_type(df[column].var()) if pd.api.types.is_numeric_dtype(df[column]) else None,
-                    "std": _convert_to_native_type(df[column].std()) if pd.api.types.is_numeric_dtype(df[column]) else None,
-                    "min": _convert_to_native_type(df[column].min()) if pd.api.types.is_numeric_dtype(df[column]) else None,
-                    "max": _convert_to_native_type(df[column].max()) if pd.api.types.is_numeric_dtype(df[column]) else None,
-                }
-                return {"success": True, "statistics": stats}
-            return {"success": False, "error": "Missing column parameter"}
+            filter_column = arguments.get("filter_column")
+            filter_value = arguments.get("filter_value")
+            
+            if not column:
+                return {"success": False, "error": "Missing column parameter"}
+            
+            # Find the actual column name (case-insensitive)
+            col_match = None
+            for c in df.columns:
+                if c.lower() == column.lower():
+                    col_match = c
+                    break
+            
+            if not col_match:
+                return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
+            
+            # Apply filter if provided
+            df_subset = df
+            filter_info = ""
+            if filter_column and filter_value:
+                # Find filter column (case-insensitive)
+                filter_col_match = None
+                for c in df.columns:
+                    if c.lower() == filter_column.lower():
+                        filter_col_match = c
+                        break
+                
+                if not filter_col_match:
+                    return {"success": False, "error": f"Filter column '{filter_column}' not found. Available: {', '.join(df.columns[:10])}"}
+                
+                # Try type conversion for filter value
+                try:
+                    if pd.api.types.is_integer_dtype(df[filter_col_match].dtype):
+                        filter_value = int(filter_value)
+                    elif pd.api.types.is_float_dtype(df[filter_col_match].dtype):
+                        filter_value = float(filter_value)
+                except (ValueError, TypeError):
+                    pass
+                
+                # Try exact match first
+                matches = df[df[filter_col_match].astype(str).str.lower() == str(filter_value).lower()]
+                
+                # If no exact match, try partial match
+                if len(matches) == 0:
+                    matches = df[df[filter_col_match].astype(str).str.lower().str.contains(str(filter_value).lower(), na=False)]
+                
+                if len(matches) == 0:
+                    return {"success": False, "error": f"No rows found where {filter_col_match} matches '{filter_value}'"}
+                
+                df_subset = matches
+                filter_info = f" (filtered by {filter_col_match} = '{filter_value}', {len(df_subset)} rows)"
+            
+            # Calculate statistics on the subset
+            if not pd.api.types.is_numeric_dtype(df_subset[col_match]):
+                return {"success": False, "error": f"Column '{col_match}' is not numeric. Cannot calculate mean/variance/std/min/max."}
+            
+            stats = {
+                "count": _convert_to_native_type(df_subset[col_match].count()),
+                "nulls": _convert_to_native_type(df_subset[col_match].isna().sum()),
+                "mean": _convert_to_native_type(df_subset[col_match].mean()),
+                "variance": _convert_to_native_type(df_subset[col_match].var()),
+                "std": _convert_to_native_type(df_subset[col_match].std()),
+                "min": _convert_to_native_type(df_subset[col_match].min()),
+                "max": _convert_to_native_type(df_subset[col_match].max()),
+                "filter_info": filter_info if filter_info else None,
+            }
+            return {"success": True, "statistics": stats}
         
         elif function_name == "group_by":
             # Group by a column and optionally aggregate
@@ -870,6 +990,15 @@ Examples:
         
         if not plan:
             return None
+    except Exception as e:
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, return None to trigger fallback
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            print(f"[Chat] Query interpretation failed: Model requires privacy settings")
+        else:
+            print(f"[Chat] Query interpretation failed: {e}")
+        return None
             
         query_type = plan.get("type", "info")
         column = plan.get("column")
@@ -1054,7 +1183,16 @@ RULES:
         {"role": "user", "content": user_message}
     ]
     
-    return await chat_completion(messages, temperature=0.3)
+    try:
+        return await chat_completion(messages, temperature=0.3)
+    except Exception as e:
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, return helpful message
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            return "**Configuration required:** This model requires OpenRouter privacy settings to be configured. Please visit https://openrouter.ai/settings/privacy to enable free model publication, or try a different model."
+        # Otherwise return a generic error
+        return f"**Error:** Unable to process your request. Please try again or check your OpenRouter configuration."
 
 
 async def _classify_query_type(user_message: str, columns: List[str]) -> str:
@@ -1094,7 +1232,13 @@ Examples:
         result = response.strip().lower()
         return "data" if "data" in result else "general"
     except Exception as e:
-        print(f"[Chat] Query classification error: {e}, defaulting to data")
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, don't spam logs - just default to data
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            print(f"[Chat] Query classification error: Model requires privacy settings, defaulting to data")
+        else:
+            print(f"[Chat] Query classification error: {e}, defaulting to data")
         return "data"  # Default to data query if classification fails
 
 
@@ -1133,7 +1277,7 @@ If they ask what you can do, mention: searching data, getting statistics, findin
         
         messages: List[Message] = [{"role": "system", "content": general_prompt}]
         if history:
-            messages.extend(history[-4:])  # Limited history for general chat
+            messages.extend(history)  # Full chat history
         messages.append({"role": "user", "content": user_message})
         return await chat_completion(messages, temperature=0.7)
     
@@ -1213,26 +1357,29 @@ If they ask what you can do, mention: searching data, getting statistics, findin
                 
         except Exception as e:
             error_str = str(e)
+            error_lower = error_str.lower()
             print(f"[Chat] Error: {error_str}")
             
             # Handle rate limit errors
-            if "rate limit" in error_str.lower() or "429" in error_str:
+            if "rate limit" in error_lower or "429" in error_str:
                 return "**Rate limit reached.** The AI service is temporarily unavailable. Please try again in a few minutes."
             
-            # If tools not supported, fallback to regular chat with context
-            if "tools" in error_str.lower() or "function" in error_str.lower():
-                context_info = f"\n\nDataset has {len(df)} rows and {len(df.columns)} columns: {', '.join(df.columns.tolist()[:10])}"
-                if len(df.columns) > 10:
-                    context_info += f" and {len(df.columns) - 10} more."
-                
-                fallback_messages = [
-                    {"role": "system", "content": "You are a helpful assistant that answers questions about datasets. Be concise."},
-                    {"role": "user", "content": user_message + context_info}
-                ]
-                try:
-                    return await chat_completion(fallback_messages, temperature=0.7)
-                except Exception:
-                    return "**Rate limit reached.** Please try again later."
+            # Check for data policy errors (OpenRouter requires privacy settings)
+            if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+                return "**Configuration required:** This model requires OpenRouter privacy settings to be configured. Please visit https://openrouter.ai/settings/privacy to enable free model publication, or try a different model."
+            
+            # Check for tool/function calling errors (OpenRouter 404, tool use errors, etc.)
+            tool_error_indicators = [
+                "tool use" in error_lower,
+                "tools" in error_lower,
+                "function" in error_lower,
+                "404" in error_str and ("endpoint" in error_lower or "tool" in error_lower),
+                "no endpoints found" in error_lower,
+            ]
+            
+            if any(tool_error_indicators):
+                print("[Chat] Tool calling not supported, falling back to non-tool chat...")
+                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
             
             return f"Error processing request: {error_str}"
     else:

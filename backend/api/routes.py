@@ -260,7 +260,7 @@ async def chat(
             response += "- Transform your data with commands like *'remove column X'* or *'filter where Y > 10'*"
         else:
             context = {"columns": columns}
-            history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
+            history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
             data_path = state.curated_path or state.raw_path
             try:
                 response = await chat_with_agent(
@@ -398,7 +398,7 @@ async def chat_stream(
             # Chat intent
             if has_data:
                 context = {"columns": columns}
-                history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history[-6:]]
+                history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
                 data_path = state.curated_path or state.raw_path
                 response = await chat_with_agent(
                     user_msg, data_path=data_path, context=context, history=history,
