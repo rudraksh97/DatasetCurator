@@ -14,7 +14,6 @@ An AI-powered tool for cleaning and transforming CSV datasets through natural la
 
 - **Natural Language Transformations** - "remove nulls and sort by date"
 - **Multi-Step Execution** - Complex operations broken into atomic steps
-- **Real-Time Streaming** - Watch steps execute live in the UI
 - **Automatic Retries** - Failed steps retry automatically
 - **Version Control** - Every transformation creates a new version
 - **Data Querying** - Ask questions about your data
@@ -25,7 +24,7 @@ An AI-powered tool for cleaning and transforming CSV datasets through natural la
 +-------------------+          +-------------------+          +------------+
 |                   |   HTTP   |                   |   SQL    |            |
 |  Next.js Frontend |<-------->|  FastAPI Backend  |<-------->| PostgreSQL |
-|  (React + SSE)    |          |  (LangGraph)      |          |            |
+|  (React)          |          |  (LangGraph)      |          |            |
 +-------------------+          +-------------------+          +------------+
         |                              |
         |                              |
@@ -153,7 +152,7 @@ dataset-curator/
 |   |   +-- data_ops.py        # DataFrame operations (15+ transforms)
 |   |
 |   +-- api/
-|   |   +-- routes.py          # REST + SSE endpoints
+|   |   +-- routes.py          # REST endpoints
 |   |
 |   +-- orchestrator/
 |   |   +-- workflow.py        # LangGraph workflow (unified)
@@ -176,7 +175,7 @@ dataset-curator/
 |   |   +-- ui/                # Reusable components
 |   |
 |   +-- lib/
-|   |   +-- api.ts             # API client + SSE streaming
+|   |   +-- api.ts             # API client
 |
 +-- storage/
 |   +-- raw/                   # Uploaded files
@@ -216,10 +215,6 @@ POST /chat/{dataset_id}
      |-- Send natural language message
      +-- Returns: assistant response
 
-POST /chat/{dataset_id}/stream
-     |-- Send message with SSE streaming
-     +-- Returns: real-time step events
-
 GET  /preview/{dataset_id}?page=1&page_size=50
      |-- Get paginated data preview
      +-- Returns: data, pagination info
@@ -227,22 +222,6 @@ GET  /preview/{dataset_id}?page=1&page_size=50
 GET  /download/{dataset_id}/file
      |-- Download processed CSV
      +-- Returns: file download
-```
-
-## Streaming Events (SSE)
-
-```
-Event: plan
-Data:  { total_steps: 3, steps: ["Remove nulls", "Drop column", "Sort"] }
-
-Event: step_start
-Data:  { step: 1, description: "Remove nulls" }
-
-Event: step_complete
-Data:  { step: 1, success: true, message: "Removed 50 rows", rows_after: 950 }
-
-Event: done
-Data:  { success: true, total_executed: 3, final_message: "..." }
 ```
 
 ## Quick Start
@@ -309,7 +288,7 @@ pytest
 | Next.js 14       | FastAPI          | Docker           |
 | React 18         | LangGraph        | PostgreSQL       |
 | TypeScript       | Pandas           | OpenRouter       |
-| Server-Sent Events| SQLAlchemy      | Llama 3.3 70B    |
+|                  | SQLAlchemy       | Llama 3.3 70B    |
 +------------------+------------------+------------------+
 ```
 

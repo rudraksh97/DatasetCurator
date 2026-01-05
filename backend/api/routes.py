@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Dict, AsyncGenerator
+from typing import Dict
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +13,6 @@ from db import get_session, AsyncSessionLocal
 from orchestrator.workflow import (
     Orchestrator,
     execute_transformation,
-    execute_transformation_streaming,
     CURATED_STORAGE,
 )
 from llm import classify_intent, chat_with_agent
@@ -22,11 +20,6 @@ from embeddings import embed_dataset
 
 router = APIRouter()
 orchestrator = Orchestrator()
-
-
-def _sse_event(event_type: str, data: dict) -> str:
-    """Format a Server-Sent Event message."""
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 class ChatMessageRequest(BaseModel):
@@ -277,151 +270,3 @@ async def chat(
         await orchestrator._upsert_state(session, state)
 
     return ChatResponse(user_message=user_msg, assistant_message=response)
-
-
-@router.post("/chat/{dataset_id}/stream")
-async def chat_stream(
-    dataset_id: str, message: ChatMessageRequest, session: AsyncSession = Depends(get_session)
-):
-    """Stream chat responses with real-time step updates for multi-step operations."""
-    user_msg = message.content
-    timestamp = pd.Timestamp.utcnow().isoformat()
-
-    async def generate_stream() -> AsyncGenerator[str, None]:
-        nonlocal session
-        
-        # Get existing state
-        try:
-            state = await orchestrator._get_state(session, dataset_id)
-            has_data = bool(state.curated_path or state.raw_path)
-            columns = list(state.schema.keys()) if state.schema else []
-        except ValueError:
-            state = None
-            has_data = False
-            columns = []
-
-        # Classify intent
-        intent_result = await classify_intent(user_msg, has_data=has_data, columns=columns)
-        intent = intent_result.get("intent", "chat")
-
-        # Handle transformations with LangGraph streaming
-        if intent in ("transform_data", "multi_transform") and has_data:
-            data_path = state.curated_path or state.raw_path
-            final_message = ""
-            final_df = None
-            executed_count = 0
-            total_steps = 0
-            
-            # Use unified LangGraph workflow with streaming
-            async for event in execute_transformation_streaming(
-                user_message=user_msg,
-                data_path=data_path,
-                columns=columns,
-                max_retries=1,  # Retry failed steps once
-            ):
-                # Convert WorkflowEvent to SSE
-                if event.event_type == "plan":
-                    total_steps = event.data.get("total_steps", 0)
-                    yield _sse_event("plan", {
-                        "total_steps": total_steps,
-                        "steps": event.data.get("steps", []),
-                    })
-                
-                elif event.event_type == "step_start":
-                    yield _sse_event("step_start", {
-                        "step": event.data.get("step"),
-                        "description": event.data.get("description"),
-                    })
-                
-                elif event.event_type == "step_complete":
-                    # Include retry info if step was retried
-                    msg = event.data.get("message", "")
-                    if event.data.get("retried"):
-                        msg += " (retried)"
-                    
-                    yield _sse_event("step_complete", {
-                        "step": event.data.get("step"),
-                        "success": event.data.get("success"),
-                        "message": msg,
-                        "rows_before": event.data.get("rows_before"),
-                        "rows_after": event.data.get("rows_after"),
-                    })
-                
-                elif event.event_type == "done":
-                    final_message = event.data.get("final_message", "")
-                    executed_count = event.data.get("total_executed", 0)
-                    
-                    # Reload the transformed data for saving
-                    if event.data.get("success") and executed_count > 0:
-                        # Re-execute to get final DataFrame (graph doesn't return it via streaming)
-                        try:
-                            df = pd.read_csv(data_path)
-                            # Re-run the plan to get final state
-                            plan = await create_execution_plan(user_msg, columns)
-                            for step in plan.get("steps", []):
-                                op = step.get("operation")
-                                params = step.get("params", {})
-                                if op:
-                                    operator = DataOperator(df)
-                                    success, _ = operator.execute(op, params)
-                                    if success:
-                                        df = operator.get_result()
-                            final_df = df
-                        except Exception:
-                            final_df = None
-            
-            # Save final result
-            if final_df is not None and executed_count > 0:
-                version = state.current_version + 1
-                new_path = CURATED_STORAGE / f"{state.dataset_id}_v{version}.csv"
-                final_df.to_csv(new_path, index=False)
-                
-                state.curated_path = str(new_path)
-                state.current_version = version
-                
-                # Add preview to final message
-                final_message += f"\n\n**Preview:**\n\n{_df_to_markdown(final_df, 5)}"
-            
-            # Save chat history
-            state.chat_history.append({"role": "user", "content": user_msg, "timestamp": timestamp})
-            state.chat_history.append({"role": "assistant", "content": final_message, "timestamp": timestamp})
-            await orchestrator._upsert_state(session, state)
-            
-            yield _sse_event("done", {
-                "success": executed_count > 0,
-                "total_executed": executed_count,
-                "total_steps": total_steps,
-                "final_message": final_message
-            })
-
-        else:
-            # Chat intent
-            if has_data:
-                context = {"columns": columns}
-                history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
-                data_path = state.curated_path or state.raw_path
-                response = await chat_with_agent(
-                    user_msg, data_path=data_path, context=context, history=history,
-                    session=session, dataset_id=dataset_id
-                )
-            else:
-                response = "**Welcome!** Upload a CSV to get started."
-
-            # Save chat history for non-streaming
-            if state:
-                state.chat_history.append({"role": "user", "content": user_msg, "timestamp": timestamp})
-                state.chat_history.append({"role": "assistant", "content": response, "timestamp": timestamp})
-                await orchestrator._upsert_state(session, state)
-
-            yield _sse_event("message", {"content": response})
-            yield _sse_event("done", {"success": True, "final_message": response})
-
-    return StreamingResponse(
-        generate_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
-    )

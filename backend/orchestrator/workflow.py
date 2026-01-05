@@ -4,16 +4,14 @@ This module provides:
 1. Dataset upload and initial processing
 2. Multi-step transformations with LangGraph
 3. State management and persistence
-4. Streaming execution with real-time events
-5. Conditional branching, retries, and validation
+4. Conditional branching, retries, and validation
 """
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 import pandas as pd
 from langgraph.graph import StateGraph, END
@@ -91,17 +89,6 @@ class TransformationState(TypedDict):
     # Output
     final_message: str
     success: bool
-
-
-# ============================================================================
-# Event Types for Streaming
-# ============================================================================
-
-@dataclass
-class WorkflowEvent:
-    """Event emitted during workflow execution for streaming."""
-    event_type: str
-    data: Dict[str, Any]
 
 
 # ============================================================================
@@ -519,105 +506,6 @@ async def execute_transformation(
         final_state["final_message"],
         final_state["df"],
     )
-
-
-async def execute_transformation_streaming(
-    user_message: str,
-    data_path: str,
-    columns: List[str],
-    max_retries: int = 1,
-) -> AsyncGenerator[WorkflowEvent, None]:
-    """Execute transformation workflow with streaming events."""
-    
-    graph = create_transformation_graph()
-    
-    initial_state: TransformationState = {
-        "user_message": user_message,
-        "data_path": data_path,
-        "columns": columns,
-        "steps": [],
-        "current_step_idx": 0,
-        "df": None,
-        "results": [],
-        "needs_approval": False,
-        "approval_granted": True,
-        "error_message": "",
-        "max_retries": max_retries,
-        "final_message": "",
-        "success": False,
-    }
-    
-    # Track state for streaming
-    prev_step_idx = -1
-    prev_results_len = 0
-    plan_sent = False
-    
-    async for state in graph.astream(initial_state):
-        # Extract state from LangGraph output
-        if isinstance(state, dict):
-            node_name = list(state.keys())[0]
-            current_state = state[node_name]
-        else:
-            current_state = state
-        
-        # Emit plan event
-        if not plan_sent and current_state.get("steps"):
-            plan_sent = True
-            yield WorkflowEvent(
-                event_type="plan",
-                data={
-                    "total_steps": len(current_state["steps"]),
-                    "steps": [s.get("description", "") for s in current_state["steps"]],
-                }
-            )
-            await asyncio.sleep(0.05)
-        
-        # Emit step events
-        results = current_state.get("results", [])
-        step_idx = current_state.get("current_step_idx", 0)
-        
-        # New step starting
-        if step_idx > prev_step_idx and step_idx < len(current_state.get("steps", [])):
-            step = current_state["steps"][step_idx]
-            yield WorkflowEvent(
-                event_type="step_start",
-                data={
-                    "step": step.get("step", step_idx + 1),
-                    "description": step.get("description", ""),
-                }
-            )
-            await asyncio.sleep(0.05)
-            prev_step_idx = step_idx
-        
-        # Step completed
-        if len(results) > prev_results_len:
-            for result in results[prev_results_len:]:
-                yield WorkflowEvent(
-                    event_type="step_complete",
-                    data={
-                        "step": result.step_num,
-                        "success": result.status == StepStatus.SUCCESS,
-                        "message": result.message,
-                        "rows_before": result.rows_before,
-                        "rows_after": result.rows_after,
-                        "retried": result.retry_count > 0,
-                    }
-                )
-                await asyncio.sleep(0.05)
-            prev_results_len = len(results)
-        
-        # Final state
-        if current_state.get("final_message"):
-            yield WorkflowEvent(
-                event_type="done",
-                data={
-                    "success": current_state["success"],
-                    "final_message": current_state["final_message"],
-                    "total_executed": sum(1 for r in results if r.status == StepStatus.SUCCESS),
-                    "total_steps": len(current_state.get("steps", [])),
-                }
-            )
-            break
 
 
 # ============================================================================

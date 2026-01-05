@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { downloadCuratedFile, uploadDataset, sendChatMessageStream, getPreview } from "@/lib/api";
-import type { StreamEvent } from "@/lib/api";
+import { downloadCuratedFile, uploadDataset, sendChatMessage, getPreview } from "@/lib/api";
 import type { UploadResponse } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -195,18 +194,6 @@ export default function Home() {
     return newMessage.id;
   };
 
-  const updateMessage = (id: string, content: string) => {
-    setMessages((prev: ChatMessage[]) => {
-      const updated = prev.map((msg) => 
-        msg.id === id ? { ...msg, content } : msg
-      );
-      if (datasetId) {
-        localStorage.setItem(`chat_history_${datasetId}`, JSON.stringify(updated));
-      }
-      return updated;
-    });
-  };
-
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
@@ -304,53 +291,9 @@ export default function Home() {
 
     setIsProcessing(true);
     
-    // Create a streaming message placeholder
-    const streamingMsgId = `streaming_${Date.now()}`;
-    let streamingContent = "";
-    let isMultiStep = false;
-    
     try {
-      await sendChatMessageStream(sessionId, msg, (event: StreamEvent) => {
-        switch (event.type) {
-          case "plan":
-            // Multi-step operation starting
-            isMultiStep = true;
-            const stepList = event.data.steps?.map((s, i) => `${i + 1}. ${s}`).join("\n") || "";
-            streamingContent = `**Planning ${event.data.total_steps} steps:**\n${stepList}\n\n---\n`;
-            addMessage("assistant", streamingContent, streamingMsgId);
-            break;
-            
-          case "step_start":
-            // Step is starting
-            streamingContent += `\n**Step ${event.data.step}:** ${event.data.description}\n  ⏳ *Executing...*`;
-            updateMessage(streamingMsgId, streamingContent);
-            break;
-            
-          case "step_complete":
-            // Step finished - replace the "Executing..." with result
-            const icon = event.data.success ? "✓" : "✗";
-            streamingContent = streamingContent.replace(
-              /⏳ \*Executing\.\.\.\*$/,
-              `${icon} ${event.data.message}`
-            );
-            updateMessage(streamingMsgId, streamingContent);
-            break;
-            
-          case "message":
-            // Simple message (non-multi-step)
-            if (!isMultiStep) {
-              addMessage("assistant", event.data.content || "");
-            }
-            break;
-            
-          case "done":
-            // All done - update with final message if multi-step
-            if (isMultiStep && event.data.final_message) {
-              updateMessage(streamingMsgId, event.data.final_message);
-            }
-            break;
-        }
-      });
+      const response = await sendChatMessage(sessionId, msg);
+      addMessage("assistant", response.assistant_message);
       
       // Refresh data preview after chat (transformations may have occurred)
       try {
