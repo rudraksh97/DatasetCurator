@@ -2,12 +2,21 @@
 
 This module defines the tools (functions) available to the LLM
 for querying and interacting with datasets.
+
+Query tools are organized by operation type:
+- Column Discovery: find_columns, list_columns
+- Row Lookup: search_rows, get_row, get_value, get_random_value
+- Aggregation: get_statistics, group_by, calculate_ratio
+- Metadata: get_row_count
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-# Tool schema for OpenAI function calling
+# =============================================================================
+# LLM Function Calling Tools (Query Operations - Read Only)
+# =============================================================================
+
 CHAT_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",

@@ -2,84 +2,133 @@
 
 This module contains all prompt templates used by the LLM services,
 keeping them centralized and easy to modify.
+
+Operations are organized by canonical base transformation primitives:
+- Row-Level: filter_rows, map_rows (+ aliases for common transforms)
+- Column/Schema: select_columns, rename_columns, add_column, drop_columns, cast_column_types
+- Dataset-Level: deduplicate_rows, sort_rows
 """
 from __future__ import annotations
 
 from typing import List
 
-# Data operations supported by the system
-DATA_OPERATIONS = [
-    "drop_column",
-    "rename_column",
-    "drop_nulls",
-    "fill_nulls",
-    "drop_duplicates",
-    "filter_rows",
-    "drop_rows",
-    "add_column",
-    "add_conditional_column",
-    "convert_type",
-    "sort",
-    "replace_values",
-    "lowercase",
-    "uppercase",
-    "strip_whitespace",
+# =============================================================================
+# Canonical Base Transformations → Operation Mapping
+# =============================================================================
+
+# Row-Level Primitives
+ROW_FILTER_OPS = [
+    "filter_rows",      # Base: filter_rows (keep matching)
+    "drop_rows",        # Base: filter_rows (inverted predicate)
+    "drop_nulls",       # Base: filter_rows (NOT NULL predicate)
 ]
 
+ROW_MAP_OPS = [
+    "fill_nulls",       # Base: map_rows (fill transform)
+    "replace_values",   # Base: map_rows (replace transform)
+    "lowercase",        # Base: map_rows (str.lower)
+    "uppercase",        # Base: map_rows (str.upper)
+    "strip_whitespace", # Base: map_rows (str.strip)
+]
 
-PLANNER_SYSTEM_TEMPLATE = """You are a dataset transformation planner. Your job is to break down user requests into a sequence of atomic operations.
+# Column/Schema Primitives
+COLUMN_OPS = [
+    "drop_column",      # Base: drop_columns (single)
+    "drop_columns",     # Base: drop_columns
+    "keep_columns",     # Base: select_columns
+    "rename_column",    # Base: rename_columns
+    "add_column",       # Base: add_column
+    "add_conditional_column",  # Composite: add_column + map_rows
+    "convert_type",     # Base: cast_column_types
+]
 
-Given a user's request and the available columns, create a plan with individual steps.
+# Dataset-Level Primitives
+DATASET_OPS = [
+    "drop_duplicates",  # Base: deduplicate_rows
+    "sort",             # Base: sort_rows
+    "limit_rows",       # Base: limit_rows (head/tail)
+    "sample_rows",      # Base: sample_rows (random sample)
+]
 
-IMPORTANT RULES:
-1. Each step should be ONE atomic operation
-2. Steps execute in order - later steps see results of earlier steps
-3. If a request has only ONE operation, return a single step
-4. Order matters: do filtering/dropping rows BEFORE column operations when possible
-5. Be specific about column names and values
+# Grouping & Aggregation Primitives
+GROUPING_OPS = [
+    "group_aggregate",  # Base: group_rows + aggregate_groups
+]
 
-Available operations: {operations}
+# Validation & Quality Primitives
+VALIDATION_OPS = [
+    "validate_schema",  # Base: validate_schema
+    "quarantine_rows",  # Base: quarantine_rows
+]
 
-Operation parameter formats:
-- drop_column: {{"column": "col_name"}}
+# All operations (flat list for backward compatibility)
+DATA_OPERATIONS = ROW_FILTER_OPS + ROW_MAP_OPS + COLUMN_OPS + DATASET_OPS + GROUPING_OPS + VALIDATION_OPS
+
+
+PLANNER_SYSTEM_TEMPLATE = """You are a dataset transformation planner. Break down user requests into atomic operations.
+
+RULES:
+1. Each step = ONE atomic operation
+2. Steps execute in order (later steps see earlier results)
+3. Order: row operations BEFORE column operations when possible
+4. Be specific about column names and values
+
+=== AVAILABLE OPERATIONS (by category) ===
+
+ROW FILTERING (filter_rows primitive):
+- filter_rows: {{"column": "col", "operator": "op", "value": "val"}} - KEEPS matching rows
+- drop_rows: {{"column": "col", "operator": "op", "value": "val"}} - REMOVES matching rows  
+- drop_nulls: {{}} or {{"column": "col"}} - removes rows with nulls
+  Operators: ==, !=, >, <, >=, <=, contains
+
+ROW TRANSFORMS (map_rows primitive):
+- fill_nulls: {{"column": "col", "value": "val"}} or {{"column": "col", "method": "mean|median|ffill|bfill"}}
+- replace_values: {{"column": "col", "old_value": "old", "new_value": "new"}}
+- lowercase: {{"column": "col"}}
+- uppercase: {{"column": "col"}}
+- strip_whitespace: {{"column": "col"}}
+
+COLUMN OPERATIONS:
+- drop_column: {{"column": "col"}}
+- drop_columns: {{"columns": ["col1", "col2"]}}
+- keep_columns: {{"columns": ["col1", "col2"]}} - keeps ONLY these columns
 - rename_column: {{"old_name": "old", "new_name": "new"}}
-- drop_nulls: {{}} or {{"column": "col_name"}}
-- fill_nulls: {{"column": "col_name", "value": "fill_value"}}
-- drop_duplicates: {{}} or {{"column": "col_name"}}
-- filter_rows: {{"column": "col_name", "operator": "op", "value": "val"}} - KEEPS matching rows
-- drop_rows: {{"column": "col_name", "operator": "op", "value": "val"}} - REMOVES matching rows
-- add_column: {{"name": "col_name", "value": "static_value"}}
-- add_conditional_column (simple): {{"name": "col_name", "condition_column": "col", "operator": "op", "threshold": val, "true_value": "yes", "false_value": "no"}}
-- add_conditional_column (MULTIPLE CONDITIONS - use this for ranges like "X as A, Y as B, Z as C"):
-  {{"name": "col_name", "condition_column": "col", "conditions": [
+- add_column: {{"name": "col", "value": "static_value"}}
+- add_column (from another): {{"name": "col", "from_column": "source", "operation": "copy|upper|lower|length"}}
+- convert_type: {{"column": "col", "dtype": "int|float|str|datetime|bool"}}
+
+CONDITIONAL COLUMN (composite: add_column + map_rows):
+- Single condition: {{"name": "col", "condition_column": "src", "operator": ">", "threshold": 50, "true_value": "yes", "false_value": "no"}}
+- Multiple conditions (for ranges):
+  {{"name": "col", "condition_column": "src", "conditions": [
     {{"operator": "<", "value": 30, "result": "Hard"}},
     {{"operator": "between", "value1": 30, "value2": 60, "result": "Medium"}},
     {{"operator": ">", "value": 60, "result": "Easy"}}
-  ]}}
-- convert_type: {{"column": "col_name", "dtype": "int|float|str|datetime"}}
-- sort: {{"column": "col_name", "ascending": true|false}}
-- replace_values: {{"column": "col_name", "old_value": "old", "new_value": "new"}}
-- lowercase: {{"column": "col_name"}}
-- uppercase: {{"column": "col_name"}}
-- strip_whitespace: {{"column": "col_name"}}
+  ], "default_value": "Unknown"}}
 
-CRITICAL: When user wants a column with MULTIPLE categories/ranges (e.g., "< 30 as Hard, 30-60 as Medium, > 60 as Easy"):
-- Use ONE add_conditional_column with "conditions" array - DO NOT create multiple steps!
-- The "conditions" array handles all ranges in a single operation
+DATASET OPERATIONS:
+- drop_duplicates: {{}} or {{"columns": ["col1", "col2"], "keep": "first|last"}}
+- sort: {{"column": "col", "ascending": true|false}}
+- limit_rows: {{"n": 100}} or {{"n": 50, "from_end": true}} - first/last N rows
+- sample_rows: {{"n": 100}} or {{"fraction": 0.1}} - random sample
 
-Operators for filter_rows/drop_rows: ==, !=, >, <, >=, <=, contains, startswith, endswith
+GROUPING & AGGREGATION:
+- group_aggregate: {{"group_by": "col", "aggregations": {{"value_col": "sum|mean|min|max|count"}}}}
+- group_aggregate (multiple aggs): {{"group_by": ["col1", "col2"], "aggregations": {{"sales": "sum", "price": "mean"}}}}
+- group_aggregate (count only): {{"group_by": "category"}} - defaults to count
+
+VALIDATION & QUALITY:
+- validate_schema: {{"columns": ["required_col1", "required_col2"], "types": {{"age": "int", "name": "str"}}, "not_null": ["id"], "unique": ["email"], "ranges": {{"score": {{"min": 0, "max": 100}}}}}}
+- quarantine_rows (nulls): {{"column": "col", "condition": "null"}} - separates null rows
+- quarantine_rows (duplicates): {{"column": "col", "condition": "duplicate"}}
+- quarantine_rows (out of range): {{"column": "col", "condition": "range", "min": 0, "max": 100}}
+- quarantine_rows (invalid format): {{"column": "email", "condition": "regex", "pattern": "^[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+$"}}
+- quarantine_rows (bad values): {{"column": "status", "condition": "values", "values": ["INVALID", "ERROR"]}}
 
 Available columns: {columns}
 
-Respond with ONLY valid JSON in this format:
-{{
-  "is_multi_step": true/false,
-  "steps": [
-    {{"step": 1, "description": "Human readable description", "operation": "op_name", "params": {{...}}}}
-  ]
-}}
-
-ONLY respond with JSON."""
+Respond with ONLY valid JSON:
+{{"is_multi_step": true/false, "steps": [{{"step": 1, "description": "...", "operation": "op_name", "params": {{...}}}}]}}"""
 
 
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
@@ -178,10 +227,7 @@ def build_planner_prompt(columns: List[str]) -> str:
         Formatted system prompt.
     """
     columns_str = ", ".join(columns) if columns else "No columns available"
-    return PLANNER_SYSTEM_TEMPLATE.format(
-        operations=", ".join(DATA_OPERATIONS),
-        columns=columns_str,
-    )
+    return PLANNER_SYSTEM_TEMPLATE.format(columns=columns_str)
 
 
 def build_intent_prompt(has_data: bool, columns: List[str]) -> str:

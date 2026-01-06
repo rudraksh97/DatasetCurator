@@ -3,11 +3,31 @@
 This module provides the DataOperator class for executing data transformations
 on pandas DataFrames based on parsed operation intents from the LLM.
 
-Supported operations include:
-- Column operations: drop, rename, add, keep
-- Row operations: filter, drop, drop_nulls, drop_duplicates
-- Data transformations: type conversion, case changes, value replacement
-- Conditional columns: add columns based on conditions
+All operations map to canonical base primitives:
+
+Row-Level (filter_rows, map_rows):
+  - filter_rows, drop_rows, drop_nulls → filter_rows (boolean masking)
+  - fill_nulls, strip_whitespace, lowercase, uppercase, replace_values → map_rows
+
+Column/Schema (select_columns, rename_columns, add_column, drop_columns, cast_column_types):
+  - keep_columns → select_columns
+  - rename_column → rename_columns  
+  - drop_column, drop_columns → drop_columns
+  - add_column, add_conditional_column → add_column + map_rows
+  - convert_type → cast_column_types
+
+Dataset-Level (deduplicate_rows, sort_rows, limit_rows, sample_rows):
+  - drop_duplicates → deduplicate_rows
+  - sort → sort_rows
+  - limit_rows → limit_rows (head/tail)
+  - sample_rows → sample_rows (random sampling)
+
+Grouping & Aggregation (group_rows, aggregate_groups):
+  - group_aggregate → group_rows + aggregate_groups
+
+Validation & Quality (validate_schema, quarantine_rows):
+  - validate_schema → check columns, types, nulls, uniqueness, ranges
+  - quarantine_rows → separate invalid rows (nulls, duplicates, range, regex, values)
 """
 from __future__ import annotations
 
@@ -24,6 +44,7 @@ class DataOperator:
         self.df = df.copy()
         self.original_shape = df.shape
         self.operations_log: List[str] = []
+        self.quarantined: Optional[pd.DataFrame] = None  # Holds rows that failed validation
 
     # ---- Internal helpers -------------------------------------------------
 
@@ -54,26 +75,53 @@ class DataOperator:
             pass
         return value
 
+    def _apply_string_transform(self, col: str, transform: str) -> str:
+        """Base primitive: map_rows for string transformations."""
+        if col not in self.df.columns:
+            return f"Column '{col}' not found."
+        
+        transforms = {
+            "lower": lambda s: s.astype(str).str.lower(),
+            "upper": lambda s: s.astype(str).str.upper(),
+            "strip": lambda s: s.str.strip() if s.dtype == "object" else s,
+        }
+        
+        if transform in transforms:
+            self.df[col] = transforms[transform](self.df[col])
+            return f"Applied {transform} to '{col}'."
+        return f"Unknown transform: {transform}"
+
     def execute(self, operation: str, params: Dict[str, Any]) -> Tuple[bool, str]:
         """Execute a single operation and return success status and message."""
         op_map = {
-            "drop_column": self._drop_column,
-            "drop_columns": self._drop_columns,
-            "rename_column": self._rename_column,
-            "drop_nulls": self._drop_nulls,
-            "fill_nulls": self._fill_nulls,
-            "drop_duplicates": self._drop_duplicates,
+            # Row filtering (filter_rows primitive)
             "filter_rows": self._filter_rows,
             "drop_rows": self._drop_rows,
-            "convert_type": self._convert_type,
+            "drop_nulls": self._drop_nulls,
+            # Row transforms (map_rows primitive)
+            "fill_nulls": self._fill_nulls,
             "strip_whitespace": self._strip_whitespace,
             "lowercase": self._lowercase,
             "uppercase": self._uppercase,
             "replace_values": self._replace_values,
-            "sort": self._sort,
+            # Column operations
+            "drop_column": self._drop_column,
+            "drop_columns": self._drop_columns,
             "keep_columns": self._keep_columns,
+            "rename_column": self._rename_column,
             "add_column": self._add_column,
             "add_conditional_column": self._add_conditional_column,
+            "convert_type": self._convert_type,
+            # Dataset operations
+            "drop_duplicates": self._drop_duplicates,
+            "sort": self._sort,
+            "limit_rows": self._limit_rows,
+            "sample_rows": self._sample_rows,
+            # Grouping & aggregation
+            "group_aggregate": self._group_aggregate,
+            # Validation & quality
+            "validate_schema": self._validate_schema,
+            "quarantine_rows": self._quarantine_rows,
         }
         
         if operation not in op_map:
@@ -87,23 +135,23 @@ class DataOperator:
             return False, f"Error executing {operation}: {str(e)}"
 
     def _drop_column(self, params: Dict) -> str:
+        """Alias for drop_columns with single column. Base: drop_columns."""
         col = params.get("column")
         col = self._match_column(col) if col else None
         if not col:
             return f"Column not found. Available: {list(self.df.columns)}"
-        self.df = self.df.drop(columns=[col])
-        return f"Dropped column '{col}'. Now {len(self.df.columns)} columns."
+        return self._drop_columns({"columns": [col]})
 
     def _drop_columns(self, params: Dict) -> str:
+        """Base primitive: drop_columns."""
         cols = params.get("columns", [])
-        dropped = []
-        for col in cols:
-            if col in self.df.columns:
-                self.df = self.df.drop(columns=[col])
-                dropped.append(col)
-        return f"Dropped {len(dropped)} columns: {dropped}"
+        existing = [c for c in cols if c in self.df.columns]
+        if existing:
+            self.df = self.df.drop(columns=existing)
+        return f"Dropped {len(existing)} columns: {existing}"
 
     def _rename_column(self, params: Dict) -> str:
+        """Base primitive: rename_columns."""
         old_name = params.get("old_name")
         new_name = params.get("new_name")
         if old_name not in self.df.columns:
@@ -112,6 +160,7 @@ class DataOperator:
         return f"Renamed '{old_name}' to '{new_name}'."
 
     def _drop_nulls(self, params: Dict) -> str:
+        """Base primitive: filter_rows (NOT NULL predicate)."""
         col = params.get("column")
         before = len(self.df)
         if col:
@@ -124,6 +173,7 @@ class DataOperator:
         return f"Removed {before - after} rows with null values. Now {after} rows."
 
     def _fill_nulls(self, params: Dict) -> str:
+        """Base primitive: map_rows (fill transform)."""
         col = params.get("column")
         value = params.get("value")
         method = params.get("method")  # 'mean', 'median', 'mode', 'ffill', 'bfill'
@@ -160,6 +210,7 @@ class DataOperator:
             return f"Filled all null values with '{value}'."
 
     def _drop_duplicates(self, params: Dict) -> str:
+        """Base primitive: deduplicate_rows."""
         cols = params.get("columns")
         keep = params.get("keep", "first")
         before = len(self.df)
@@ -171,6 +222,7 @@ class DataOperator:
         return f"Removed {before - after} duplicate rows. Now {after} rows."
 
     def _filter_rows(self, params: Dict) -> str:
+        """Base primitive: filter_rows (boolean masking)."""
         col = params.get("column")
         operator = params.get("operator", "==")
         value = params.get("value")
@@ -203,6 +255,7 @@ class DataOperator:
         return f"Filtered to {after} rows (removed {before - after})."
 
     def _drop_rows(self, params: Dict) -> str:
+        """Base primitive: filter_rows (inverted predicate)."""
         col = params.get("column")
         operator = params.get("operator", "==")
         value = params.get("value")
@@ -225,6 +278,7 @@ class DataOperator:
         return f"Dropped {before - after} rows. Now {after} rows."
 
     def _convert_type(self, params: Dict) -> str:
+        """Base primitive: cast_column_types."""
         col = params.get("column")
         dtype = params.get("dtype")
         
@@ -255,33 +309,25 @@ class DataOperator:
             return f"Error: Could not convert '{col}' to {dtype}: {str(e)}"
 
     def _strip_whitespace(self, params: Dict) -> str:
+        """Base primitive: map_rows (strip transform)."""
         col = params.get("column")
         if col:
-            if col not in self.df.columns:
-                return f"Column '{col}' not found."
-            if self.df[col].dtype == "object":
-                self.df[col] = self.df[col].str.strip()
-            return f"Stripped whitespace from '{col}'."
-        else:
-            for c in self.df.select_dtypes(include=["object"]).columns:
-                self.df[c] = self.df[c].str.strip()
-            return "Stripped whitespace from all text columns."
+            return self._apply_string_transform(col, "strip")
+        # Apply to all text columns
+        for c in self.df.select_dtypes(include=["object"]).columns:
+            self._apply_string_transform(c, "strip")
+        return "Stripped whitespace from all text columns."
 
     def _lowercase(self, params: Dict) -> str:
-        col = params.get("column")
-        if col not in self.df.columns:
-            return f"Column '{col}' not found."
-        self.df[col] = self.df[col].astype(str).str.lower()
-        return f"Converted '{col}' to lowercase."
+        """Base primitive: map_rows (lower transform)."""
+        return self._apply_string_transform(params.get("column"), "lower")
 
     def _uppercase(self, params: Dict) -> str:
-        col = params.get("column")
-        if col not in self.df.columns:
-            return f"Column '{col}' not found."
-        self.df[col] = self.df[col].astype(str).str.upper()
-        return f"Converted '{col}' to uppercase."
+        """Base primitive: map_rows (upper transform)."""
+        return self._apply_string_transform(params.get("column"), "upper")
 
     def _replace_values(self, params: Dict) -> str:
+        """Base primitive: map_rows (replace transform)."""
         col = params.get("column")
         old_value = params.get("old_value")
         new_value = params.get("new_value")
@@ -297,6 +343,7 @@ class DataOperator:
             return f"Replaced all '{old_value}' with '{new_value}'."
 
     def _sort(self, params: Dict) -> str:
+        """Base primitive: sort_rows."""
         col = params.get("column")
         ascending = params.get("ascending", True)
         
@@ -307,7 +354,201 @@ class DataOperator:
         order = "ascending" if ascending else "descending"
         return f"Sorted by '{col}' ({order})."
 
+    def _limit_rows(self, params: Dict) -> str:
+        """Base primitive: limit_rows."""
+        n = params.get("n", 100)
+        from_end = params.get("from_end", False)
+        
+        before = len(self.df)
+        if from_end:
+            self.df = self.df.tail(n)
+        else:
+            self.df = self.df.head(n)
+        
+        position = "last" if from_end else "first"
+        return f"Limited to {position} {len(self.df)} rows (was {before})."
+
+    def _sample_rows(self, params: Dict) -> str:
+        """Base primitive: sample_rows."""
+        n = params.get("n")
+        fraction = params.get("fraction")
+        random_state = params.get("random_state", 42)
+        
+        before = len(self.df)
+        
+        if fraction:
+            self.df = self.df.sample(frac=fraction, random_state=random_state)
+        elif n:
+            n = min(n, len(self.df))
+            self.df = self.df.sample(n=n, random_state=random_state)
+        else:
+            return "Either 'n' or 'fraction' is required."
+        
+        return f"Sampled {len(self.df)} rows from {before}."
+
+    def _group_aggregate(self, params: Dict) -> str:
+        """Base primitive: group_rows + aggregate_groups."""
+        group_by = params.get("group_by")
+        aggregations = params.get("aggregations", {})
+        
+        if not group_by:
+            return "group_by column(s) required."
+        
+        # Normalize group_by to list
+        if isinstance(group_by, str):
+            group_by = [group_by]
+        
+        # Validate columns exist
+        missing = [c for c in group_by if c not in self.df.columns]
+        if missing:
+            return f"Columns not found: {missing}"
+        
+        if not aggregations:
+            # Default: count
+            self.df = self.df.groupby(group_by).size().reset_index(name="count")
+            return f"Grouped by {group_by} with count. Now {len(self.df)} rows."
+        
+        # Build aggregation dict: {"col": "sum"} or {"col": ["sum", "mean"]}
+        agg_dict = {}
+        for col, agg in aggregations.items():
+            if col not in self.df.columns:
+                continue
+            agg_dict[col] = agg
+        
+        if not agg_dict:
+            return "No valid aggregation columns found."
+        
+        self.df = self.df.groupby(group_by).agg(agg_dict).reset_index()
+        # Flatten multi-level columns if needed
+        if isinstance(self.df.columns, pd.MultiIndex):
+            self.df.columns = ["_".join(col).strip("_") for col in self.df.columns]
+        
+        return f"Grouped by {group_by} with aggregations. Now {len(self.df)} rows."
+
+    def _validate_schema(self, params: Dict) -> str:
+        """Base primitive: validate_schema - check data against expected schema."""
+        expected_columns = params.get("columns")  # List of required column names
+        expected_types = params.get("types", {})  # {"col": "int|float|str|datetime|bool"}
+        not_null = params.get("not_null", [])  # Columns that must not have nulls
+        unique = params.get("unique", [])  # Columns that must have unique values
+        value_ranges = params.get("ranges", {})  # {"col": {"min": 0, "max": 100}}
+        
+        issues = []
+        
+        # Check required columns exist
+        if expected_columns:
+            missing = [c for c in expected_columns if c not in self.df.columns]
+            if missing:
+                issues.append(f"Missing columns: {missing}")
+        
+        # Check column types
+        type_map = {
+            "int": ["int64", "int32", "Int64"],
+            "float": ["float64", "float32", "Float64"],
+            "str": ["object", "string"],
+            "datetime": ["datetime64[ns]"],
+            "bool": ["bool", "boolean"],
+        }
+        for col, expected_type in expected_types.items():
+            if col not in self.df.columns:
+                continue
+            actual = str(self.df[col].dtype)
+            valid_types = type_map.get(expected_type, [expected_type])
+            if actual not in valid_types:
+                issues.append(f"Column '{col}': expected {expected_type}, got {actual}")
+        
+        # Check not-null constraints
+        for col in not_null:
+            if col in self.df.columns:
+                null_count = self.df[col].isna().sum()
+                if null_count > 0:
+                    issues.append(f"Column '{col}': {null_count} null values")
+        
+        # Check uniqueness
+        for col in unique:
+            if col in self.df.columns:
+                dup_count = self.df[col].duplicated().sum()
+                if dup_count > 0:
+                    issues.append(f"Column '{col}': {dup_count} duplicate values")
+        
+        # Check value ranges
+        for col, range_spec in value_ranges.items():
+            if col not in self.df.columns:
+                continue
+            if not pd.api.types.is_numeric_dtype(self.df[col]):
+                continue
+            min_val = range_spec.get("min")
+            max_val = range_spec.get("max")
+            if min_val is not None:
+                below = (self.df[col] < min_val).sum()
+                if below > 0:
+                    issues.append(f"Column '{col}': {below} values below {min_val}")
+            if max_val is not None:
+                above = (self.df[col] > max_val).sum()
+                if above > 0:
+                    issues.append(f"Column '{col}': {above} values above {max_val}")
+        
+        if issues:
+            return f"Validation FAILED:\n- " + "\n- ".join(issues)
+        return "Validation PASSED: Schema is valid."
+
+    def _quarantine_rows(self, params: Dict) -> str:
+        """Base primitive: quarantine_rows - separate invalid rows instead of dropping."""
+        column = params.get("column")
+        condition = params.get("condition", "null")  # null, duplicate, range, regex
+        
+        if not column or column not in self.df.columns:
+            return f"Column '{column}' not found."
+        
+        # Build mask for rows to quarantine
+        if condition == "null":
+            mask = self.df[column].isna()
+        elif condition == "duplicate":
+            mask = self.df[column].duplicated(keep=params.get("keep", "first"))
+        elif condition == "range":
+            min_val = params.get("min")
+            max_val = params.get("max")
+            mask = pd.Series([False] * len(self.df), index=self.df.index)
+            if min_val is not None:
+                mask = mask | (self.df[column] < min_val)
+            if max_val is not None:
+                mask = mask | (self.df[column] > max_val)
+        elif condition == "regex":
+            pattern = params.get("pattern", "")
+            # Quarantine rows that DON'T match the pattern (invalid format)
+            mask = ~self.df[column].astype(str).str.match(pattern, na=False)
+        elif condition == "values":
+            # Quarantine rows with specific invalid values
+            invalid_values = params.get("values", [])
+            mask = self.df[column].isin(invalid_values)
+        else:
+            return f"Unknown condition: {condition}"
+        
+        quarantine_count = mask.sum()
+        
+        if quarantine_count == 0:
+            return f"No rows to quarantine for condition '{condition}' on '{column}'."
+        
+        # Store quarantined rows
+        quarantined = self.df[mask].copy()
+        quarantined["_quarantine_reason"] = f"{condition} on {column}"
+        
+        if self.quarantined is None:
+            self.quarantined = quarantined
+        else:
+            self.quarantined = pd.concat([self.quarantined, quarantined], ignore_index=True)
+        
+        # Remove from main dataframe
+        self.df = self.df[~mask]
+        
+        return f"Quarantined {quarantine_count} rows ({condition} on '{column}'). Remaining: {len(self.df)} rows."
+
+    def get_quarantined(self) -> Optional[pd.DataFrame]:
+        """Get the quarantined rows DataFrame."""
+        return self.quarantined
+
     def _keep_columns(self, params: Dict) -> str:
+        """Base primitive: select_columns."""
         cols = params.get("columns", [])
         valid_cols = [c for c in cols if c in self.df.columns]
         if not valid_cols:
@@ -316,6 +557,7 @@ class DataOperator:
         return f"Kept {len(valid_cols)} columns: {valid_cols}"
 
     def _add_column(self, params: Dict) -> str:
+        """Base primitive: add_column."""
         name = params.get("name")
         value = params.get("value")
         from_column = params.get("from_column")
@@ -426,6 +668,7 @@ class DataOperator:
         return f"Added column '{name}' based on condition: {condition_col} {operator} {threshold}."
 
     def _add_conditional_column(self, params: Dict) -> str:
+        """Composite: add_column + map_rows (conditional transform)."""
         name = params.get("name")
         condition_col = params.get("condition_column")
         
