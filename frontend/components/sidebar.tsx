@@ -1,3 +1,9 @@
+/**
+ * Sidebar component for chat session management.
+ * 
+ * Displays a list of previous chat sessions stored in localStorage,
+ * allows creating new chats, and deleting existing sessions.
+ */
 "use client";
 
 import { useEffect, useState } from "react";
@@ -5,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Icons } from "@/components/icons";
 
+/** Represents a chat session with its metadata */
 interface ChatSession {
   id: string;
   title: string;
@@ -13,11 +20,17 @@ interface ChatSession {
 }
 
 interface SidebarProps {
+  /** Currently active session ID */
   activeSessionId: string | null;
+  /** Callback when a session is selected */
   onSelectSession: (sessionId: string) => void;
+  /** Callback to create a new chat */
   onNewChat: () => void;
 }
 
+/**
+ * Sidebar component showing chat history and navigation.
+ */
 export function Sidebar({ activeSessionId, onSelectSession, onNewChat }: SidebarProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
 
@@ -29,6 +42,9 @@ export function Sidebar({ activeSessionId, onSelectSession, onNewChat }: Sidebar
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
+  /**
+   * Load all chat sessions from localStorage.
+   */
   const loadSessions = () => {
     const allSessions: ChatSession[] = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -56,6 +72,9 @@ export function Sidebar({ activeSessionId, onSelectSession, onNewChat }: Sidebar
     setSessions(allSessions);
   };
 
+  /**
+   * Delete a chat session from localStorage.
+   */
   const deleteSession = (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
     localStorage.removeItem(`chat_history_${sessionId}`);

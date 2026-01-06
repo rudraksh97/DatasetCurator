@@ -1,3 +1,8 @@
+/**
+ * API type definitions for the Dataset Curator frontend.
+ */
+
+/** Response from the upload endpoint. */
 export interface UploadResponse {
   dataset_id: string;
   preview: Array<Record<string, unknown>>;
@@ -9,6 +14,7 @@ export interface UploadResponse {
   total_pages?: number;
 }
 
+/** Response from the preview endpoint. */
 export interface PreviewResponse {
   dataset_id: string;
   preview: Array<Record<string, unknown>>;
@@ -20,23 +26,8 @@ export interface PreviewResponse {
   total_pages: number;
 }
 
-export interface HealthResponse {
-  dataset_id: string;
-  issues: Array<Record<string, unknown>>;
-}
-
-export interface ApproveResponse {
-  dataset_id: string;
-  curated_path: string | null;
-  version: number;
-}
-
-export interface DownloadResponse {
-  dataset_id: string;
-  curated_path: string | null;
-}
-
-export interface DatasetCardResponse {
-  dataset_id: string;
-  dataset_card: Record<string, unknown>;
+/** Response from the chat endpoint. */
+export interface ChatResponse {
+  user_message: string;
+  assistant_message: string;
 }

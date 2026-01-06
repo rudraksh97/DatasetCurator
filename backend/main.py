@@ -1,3 +1,11 @@
+"""FastAPI application entry point for the Dataset Curator API.
+
+This module initializes the FastAPI application, configures CORS middleware,
+and sets up database connections on startup.
+
+To run locally:
+    uvicorn main:app --reload
+"""
 from __future__ import annotations
 
 from dotenv import load_dotenv
@@ -10,8 +18,13 @@ from api.routes import router as api_router
 from db import Base, engine, init_pgvector
 from models import db_models  # noqa: F401  # ensure models are imported for metadata
 
-app = FastAPI(title="Agentic Dataset Curator")
+app = FastAPI(
+    title="Agentic Dataset Curator",
+    description="AI-powered dataset curation and transformation API",
+    version="1.0.0",
+)
 
+# Allowed origins for CORS
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -30,6 +43,7 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup() -> None:
+    """Initialize database and extensions on application startup."""
     # Initialize pgvector extension
     await init_pgvector()
     # Create tables
@@ -39,9 +53,9 @@ async def startup() -> None:
 
 @app.get("/healthcheck")
 async def healthcheck() -> dict:
+    """Health check endpoint.
+    
+    Returns:
+        Dict with status "ok" if the service is running.
+    """
     return {"status": "ok"}
-
-
-# To run locally:
-# uvicorn main:app --reload
-

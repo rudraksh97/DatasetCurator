@@ -1,9 +1,18 @@
-"""Natural language data operations executor."""
+"""Natural language data operations executor.
+
+This module provides the DataOperator class for executing data transformations
+on pandas DataFrames based on parsed operation intents from the LLM.
+
+Supported operations include:
+- Column operations: drop, rename, add, keep
+- Row operations: filter, drop, drop_nulls, drop_duplicates
+- Data transformations: type conversion, case changes, value replacement
+- Conditional columns: add columns based on conditions
+"""
 from __future__ import annotations
 
-import re
-from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 
@@ -429,10 +438,15 @@ class DataOperator:
             return f"Error: Error creating conditional column: {str(e)}"
 
     def get_result(self) -> pd.DataFrame:
+        """Return the transformed DataFrame."""
         return self.df
 
     def get_summary(self) -> str:
-        """Get a summary of changes made."""
+        """Get a summary of changes made.
+        
+        Returns:
+            Formatted string summarizing row/column changes and operations performed.
+        """
         orig_rows, orig_cols = self.original_shape
         new_rows, new_cols = self.df.shape
         
@@ -446,225 +460,3 @@ class DataOperator:
                 summary += f"- {op}\n"
         
         return summary
-
-
-def parse_intent(message: str, columns: List[str]) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Parse user message to extract operation intent."""
-    msg = message.lower().strip()
-    
-    # Drop column patterns
-    drop_col_patterns = [
-        r"(?:remove|drop|delete|get rid of)\s+(?:the\s+)?(?:column\s+)?['\"]?(\w+)['\"]?\s*(?:column)?",
-        r"(?:remove|drop|delete)\s+['\"]?(\w+)['\"]?\s+column",
-    ]
-    for pattern in drop_col_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = match.group(1)
-            # Try to match against actual columns
-            actual_col = _find_column(col, columns)
-            if actual_col:
-                return ("drop_column", {"column": actual_col})
-    
-    # Rename column
-    rename_patterns = [
-        r"rename\s+['\"]?(\w+)['\"]?\s+(?:to|as)\s+['\"]?(\w+)['\"]?",
-        r"change\s+['\"]?(\w+)['\"]?\s+(?:to|name)\s+['\"]?(\w+)['\"]?",
-    ]
-    for pattern in rename_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            old = _find_column(match.group(1), columns) or match.group(1)
-            new = match.group(2)
-            return ("rename_column", {"old_name": old, "new_name": new})
-    
-    # Drop nulls
-    if any(x in msg for x in ["remove null", "drop null", "delete null", "remove missing", "drop missing", "remove empty", "drop empty", "clean null"]):
-        col_match = re.search(r"(?:in|from)\s+['\"]?(\w+)['\"]?", msg)
-        if col_match:
-            col = _find_column(col_match.group(1), columns)
-            return ("drop_nulls", {"column": col})
-        return ("drop_nulls", {})
-    
-    # Fill nulls
-    fill_patterns = [
-        r"fill\s+(?:null|missing|empty)s?\s+(?:in\s+)?['\"]?(\w+)['\"]?\s+with\s+['\"]?(.+?)['\"]?$",
-        r"replace\s+(?:null|missing)s?\s+(?:in\s+)?['\"]?(\w+)['\"]?\s+with\s+['\"]?(.+?)['\"]?$",
-    ]
-    for pattern in fill_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = _find_column(match.group(1), columns) or match.group(1)
-            value = match.group(2).strip("'\"")
-            # Check if it's a method
-            if value in ["mean", "median", "mode", "average"]:
-                return ("fill_nulls", {"column": col, "method": value if value != "average" else "mean"})
-            return ("fill_nulls", {"column": col, "value": value})
-    
-    # Drop duplicates
-    if any(x in msg for x in ["remove duplicate", "drop duplicate", "delete duplicate", "dedupe", "deduplicate"]):
-        return ("drop_duplicates", {})
-    
-    # Filter/keep rows
-    filter_patterns = [
-        r"(?:keep|filter)\s+(?:only\s+)?(?:rows\s+)?where\s+['\"]?(\w+)['\"]?\s*(==|!=|>|<|>=|<=|contains|is|equals?)\s*['\"]?(.+?)['\"]?$",
-        r"(?:show|get)\s+(?:only\s+)?(?:rows\s+)?where\s+['\"]?(\w+)['\"]?\s*(==|!=|>|<|>=|<=|contains|is|equals?)\s*['\"]?(.+?)['\"]?$",
-    ]
-    for pattern in filter_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = _find_column(match.group(1), columns) or match.group(1)
-            op = match.group(2)
-            if op in ["is", "equals", "equal"]:
-                op = "=="
-            value = match.group(3).strip("'\"")
-            try:
-                value = float(value) if "." in value else int(value)
-            except ValueError:
-                pass
-            return ("filter_rows", {"column": col, "operator": op, "value": value})
-    
-    # Drop rows
-    drop_row_patterns = [
-        r"(?:remove|drop|delete)\s+(?:rows?\s+)?where\s+['\"]?(\w+)['\"]?\s*(==|!=|>|<|>=|<=|contains|is|equals?)\s*['\"]?(.+?)['\"]?$",
-    ]
-    for pattern in drop_row_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = _find_column(match.group(1), columns) or match.group(1)
-            op = match.group(2)
-            if op in ["is", "equals", "equal"]:
-                op = "=="
-            value = match.group(3).strip("'\"")
-            try:
-                value = float(value) if "." in value else int(value)
-            except ValueError:
-                pass
-            return ("drop_rows", {"column": col, "operator": op, "value": value})
-    
-    # Convert type
-    type_patterns = [
-        r"convert\s+['\"]?(\w+)['\"]?\s+to\s+(int|integer|float|number|string|text|date|datetime|bool|boolean)",
-        r"(?:change|make)\s+['\"]?(\w+)['\"]?\s+(?:to\s+)?(?:a\s+)?(int|integer|float|number|string|text|date|datetime|bool|boolean)",
-    ]
-    for pattern in type_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = _find_column(match.group(1), columns) or match.group(1)
-            dtype = match.group(2)
-            return ("convert_type", {"column": col, "dtype": dtype})
-    
-    # Strip whitespace
-    if any(x in msg for x in ["strip whitespace", "trim whitespace", "remove whitespace", "clean whitespace", "strip spaces", "trim spaces"]):
-        col_match = re.search(r"(?:in|from)\s+['\"]?(\w+)['\"]?", msg)
-        if col_match:
-            col = _find_column(col_match.group(1), columns)
-            return ("strip_whitespace", {"column": col})
-        return ("strip_whitespace", {})
-    
-    # Lowercase
-    if any(x in msg for x in ["lowercase", "lower case", "to lower"]):
-        col_match = re.search(r"['\"]?(\w+)['\"]?\s+(?:to\s+)?lowercase|lowercase\s+['\"]?(\w+)['\"]?", msg)
-        if col_match:
-            col = col_match.group(1) or col_match.group(2)
-            col = _find_column(col, columns) or col
-            return ("lowercase", {"column": col})
-    
-    # Uppercase
-    if any(x in msg for x in ["uppercase", "upper case", "to upper"]):
-        col_match = re.search(r"['\"]?(\w+)['\"]?\s+(?:to\s+)?uppercase|uppercase\s+['\"]?(\w+)['\"]?", msg)
-        if col_match:
-            col = col_match.group(1) or col_match.group(2)
-            col = _find_column(col, columns) or col
-            return ("uppercase", {"column": col})
-    
-    # Sort
-    sort_patterns = [
-        r"sort\s+(?:by\s+)?['\"]?(\w+)['\"]?\s*(asc|desc|ascending|descending)?",
-        r"order\s+(?:by\s+)?['\"]?(\w+)['\"]?\s*(asc|desc|ascending|descending)?",
-    ]
-    for pattern in sort_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            col = _find_column(match.group(1), columns) or match.group(1)
-            order = match.group(2) if match.group(2) else "asc"
-            ascending = order.lower().startswith("asc")
-            return ("sort", {"column": col, "ascending": ascending})
-    
-    # Replace values
-    replace_patterns = [
-        r"replace\s+['\"]?(.+?)['\"]?\s+with\s+['\"]?(.+?)['\"]?\s+(?:in\s+)?['\"]?(\w+)['\"]?",
-        r"(?:in\s+)?['\"]?(\w+)['\"]?\s+replace\s+['\"]?(.+?)['\"]?\s+with\s+['\"]?(.+?)['\"]?",
-    ]
-    for pattern in replace_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            if "in" in msg and pattern.startswith(r"replace"):
-                old_val, new_val, col = match.groups()
-            else:
-                col, old_val, new_val = match.groups()
-            col = _find_column(col, columns) or col
-            return ("replace_values", {"column": col, "old_value": old_val, "new_value": new_val})
-    
-    # Add conditional column (e.g., "add column is_senior where age > 45")
-    add_cond_patterns = [
-        r"(?:add|create|make)\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+)?['\"]?(\w+)['\"]?\s+(?:where|if|when|based on)\s+['\"]?(\w+)['\"]?\s*(>|<|>=|<=|==|!=|is|equals?)\s*['\"]?(.+?)['\"]?$",
-        r"(?:add|create)\s+['\"]?(\w+)['\"]?\s+column\s+(?:where|if|when)\s+['\"]?(\w+)['\"]?\s*(>|<|>=|<=|==|!=|is|equals?)\s*['\"]?(.+?)['\"]?$",
-        r"(?:add|create)\s+(?:a\s+)?column\s+(?:to\s+)?(?:show|indicate|mark)\s+(?:if|whether|when)\s+['\"]?(\w+)['\"]?\s*(>|<|>=|<=|==|!=|is)\s*['\"]?(.+?)['\"]?",
-    ]
-    for pattern in add_cond_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            groups = match.groups()
-            if len(groups) == 4:
-                name, cond_col, op, threshold = groups
-            else:
-                # Infer column name from condition
-                cond_col, op, threshold = groups
-                name = f"{cond_col}_flag"
-            
-            cond_col = _find_column(cond_col, columns) or cond_col
-            if op in ["is", "equals", "equal"]:
-                op = "=="
-            try:
-                threshold = float(threshold) if "." in str(threshold) else int(threshold)
-            except ValueError:
-                pass
-            return ("add_conditional_column", {
-                "name": name,
-                "condition_column": cond_col,
-                "operator": op,
-                "threshold": threshold,
-            })
-    
-    # Simple add column (e.g., "add column status with value active")
-    add_col_patterns = [
-        r"(?:add|create|make)\s+(?:a\s+)?(?:new\s+)?column\s+(?:called\s+)?['\"]?(\w+)['\"]?\s+(?:with\s+(?:value\s+)?)?['\"]?(.+?)['\"]?$",
-        r"(?:add|create)\s+['\"]?(\w+)['\"]?\s+column",
-    ]
-    for pattern in add_col_patterns:
-        match = re.search(pattern, msg)
-        if match:
-            groups = match.groups()
-            name = groups[0]
-            value = groups[1] if len(groups) > 1 else None
-            # Don't match if this looks like a conditional
-            if value and any(x in str(value).lower() for x in ["where", "if", "when", ">", "<", "="]):
-                continue
-            return ("add_column", {"name": name, "value": value})
-    
-    return None
-
-
-def _find_column(name: str, columns: List[str]) -> Optional[str]:
-    """Find a column by name (case-insensitive, partial match)."""
-    name_lower = name.lower()
-    # Exact match (case-insensitive)
-    for col in columns:
-        if col.lower() == name_lower:
-            return col
-    # Partial match
-    for col in columns:
-        if name_lower in col.lower() or col.lower() in name_lower:
-            return col
-    return None

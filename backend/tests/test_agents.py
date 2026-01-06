@@ -1,10 +1,15 @@
-"""Tests for data operations."""
+"""Tests for data operations.
+
+This module contains unit tests for the DataOperator class,
+verifying that data transformations work correctly.
+"""
 import pandas as pd
 import pytest
 from agents.data_ops import DataOperator
 
 
 def test_data_operator_drop_column():
+    """Test dropping a column from the DataFrame."""
     df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
     op = DataOperator(df)
     success, msg = op.execute("drop_column", {"column": "b"})
@@ -13,6 +18,7 @@ def test_data_operator_drop_column():
 
 
 def test_data_operator_rename_column():
+    """Test renaming a column."""
     df = pd.DataFrame({"old_name": [1, 2, 3]})
     op = DataOperator(df)
     success, msg = op.execute("rename_column", {"old_name": "old_name", "new_name": "new_name"})
@@ -22,6 +28,7 @@ def test_data_operator_rename_column():
 
 
 def test_data_operator_filter_rows():
+    """Test filtering rows based on a condition."""
     df = pd.DataFrame({"age": [10, 20, 30, 40]})
     op = DataOperator(df)
     success, msg = op.execute("filter_rows", {"column": "age", "operator": ">", "value": 25})
@@ -30,6 +37,7 @@ def test_data_operator_filter_rows():
 
 
 def test_data_operator_add_conditional_column():
+    """Test adding a column based on a condition."""
     df = pd.DataFrame({"age": [10, 20, 30]})
     op = DataOperator(df)
     success, msg = op.execute("add_conditional_column", {
@@ -47,10 +55,9 @@ def test_data_operator_add_conditional_column():
 
 
 def test_data_operator_invalid_column():
+    """Test handling of non-existent column."""
     df = pd.DataFrame({"a": [1, 2, 3]})
     op = DataOperator(df)
     success, msg = op.execute("drop_column", {"column": "nonexistent"})
     assert not success
     assert "not found" in msg.lower()
-
-

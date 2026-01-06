@@ -990,16 +990,7 @@ Examples:
         
         if not plan:
             return None
-    except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, return None to trigger fallback
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            print(f"[Chat] Query interpretation failed: Model requires privacy settings")
-        else:
-            print(f"[Chat] Query interpretation failed: {e}")
-        return None
-            
+        
         query_type = plan.get("type", "info")
         column = plan.get("column")
         value = plan.get("value")
@@ -1101,7 +1092,13 @@ Examples:
             return f"DATASET INFO{info_note}: {row_count} rows, {len(columns)} columns\nColumns: {', '.join(columns)}"
             
     except Exception as e:
-        print(f"[Chat] Query interpretation failed: {e}")
+        error_str = str(e)
+        error_lower = error_str.lower()
+        # If it's a data policy error, return None to trigger fallback
+        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
+            print(f"[Chat] Query interpretation failed: Model requires privacy settings")
+        else:
+            print(f"[Chat] Query interpretation failed: {e}")
     
     return None
 

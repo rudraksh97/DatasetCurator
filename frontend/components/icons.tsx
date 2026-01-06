@@ -1,4 +1,9 @@
-// Minimal SVG icons
+/**
+ * SVG icon components used throughout the application.
+ * 
+ * All icons are minimal, consistent in style (16x16 or 18x18),
+ * and use currentColor for proper theming support.
+ */
 export const Icons = {
   plus: (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

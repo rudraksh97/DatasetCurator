@@ -1,3 +1,6 @@
+/**
+ * Button component with variant and size support.
+ */
 import React, { ButtonHTMLAttributes } from "react";
 import clsx from "clsx";
 
@@ -5,7 +8,9 @@ type Variant = "default" | "secondary" | "ghost" | "outline";
 type Size = "default" | "sm";
 
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
+  /** Visual style variant */
   variant?: Variant;
+  /** Size of the button */
   size?: Size;
   children?: React.ReactNode;
 }
@@ -22,7 +27,9 @@ const sizeClass: Record<Size, string> = {
   sm: "btn-sm",
 };
 
+/**
+ * Reusable button component with configurable variants and sizes.
+ */
 export function Button({ className, variant = "default", size = "default", ...props }: Props) {
   return <button className={clsx(variantClass[variant], sizeClass[size], className)} {...props} />;
 }
-

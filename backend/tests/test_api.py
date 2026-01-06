@@ -21,7 +21,8 @@ def test_upload_and_preview(client: TestClient):
     body = resp.json()
     assert body["dataset_id"] == dataset_id
     assert "preview" in body
-    assert "quality_issues" in body
+    assert "row_count" in body
+    assert "column_count" in body
 
 
 def test_preview_endpoint(client: TestClient):

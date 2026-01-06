@@ -1,3 +1,11 @@
+"""API routes for the Dataset Curator.
+
+This module defines all REST API endpoints for:
+- Dataset upload and processing
+- Data preview with pagination
+- File download
+- Chat-based data transformations
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,16 +31,26 @@ orchestrator = Orchestrator()
 
 
 class ChatMessageRequest(BaseModel):
+    """Request body for chat messages."""
     content: str
 
 
 class ChatResponse(BaseModel):
+    """Response body for chat messages."""
     user_message: str
     assistant_message: str
 
 
 def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
-    """Convert DataFrame to markdown table."""
+    """Convert DataFrame to markdown table format.
+    
+    Args:
+        df: DataFrame to convert.
+        max_rows: Maximum number of rows to include.
+    
+    Returns:
+        Markdown-formatted table string.
+    """
     df_subset = df.head(max_rows)
     headers = "| " + " | ".join(str(c) for c in df_subset.columns) + " |"
     separator = "| " + " | ".join("---" for _ in df_subset.columns) + " |"
@@ -42,7 +60,16 @@ def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
 
 
 def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, object]:
-    """Get paginated preview of dataframe."""
+    """Get paginated preview of dataframe.
+    
+    Args:
+        path: Path to CSV file.
+        page: Page number (1-indexed).
+        page_size: Number of rows per page.
+    
+    Returns:
+        Dictionary containing paginated data and metadata.
+    """
     try:
         df = pd.read_csv(path)
         total_rows = len(df)
@@ -72,8 +99,13 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
         }
 
 
-async def _embed_dataset_background(dataset_id: str, file_path: str):
-    """Background task to embed dataset for semantic search."""
+async def _embed_dataset_background(dataset_id: str, file_path: str) -> None:
+    """Background task to embed dataset for semantic search.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        file_path: Path to the CSV file.
+    """
     try:
         async with AsyncSessionLocal() as session:
             df = pd.read_csv(file_path)
@@ -90,7 +122,17 @@ async def upload_dataset(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ) -> Dict[str, object]:
-    """Upload and process a dataset."""
+    """Upload and process a dataset.
+    
+    Args:
+        background_tasks: FastAPI background task manager.
+        dataset_id: Unique identifier for the dataset.
+        file: CSV file to upload.
+        session: Database session.
+    
+    Returns:
+        Dictionary with dataset info, preview data, and pagination metadata.
+    """
     target_dir = Path("storage/raw")
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / f"{dataset_id}_{file.filename}"
@@ -132,7 +174,20 @@ async def get_preview(
     page_size: int = 50,
     session: AsyncSession = Depends(get_session)
 ) -> Dict[str, object]:
-    """Get paginated data preview."""
+    """Get paginated data preview.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        page: Page number (1-indexed).
+        page_size: Number of rows per page.
+        session: Database session.
+    
+    Returns:
+        Dictionary with preview data and pagination metadata.
+    
+    Raises:
+        HTTPException: If dataset is not found.
+    """
     try:
         state = await orchestrator._get_state(session, dataset_id)
     except ValueError:
@@ -174,8 +229,22 @@ async def get_preview(
 
 
 @router.get("/download/{dataset_id}/file")
-async def download_file(dataset_id: str, session: AsyncSession = Depends(get_session)):
-    """Download the processed dataset file."""
+async def download_file(
+    dataset_id: str, 
+    session: AsyncSession = Depends(get_session)
+) -> FileResponse:
+    """Download the processed dataset file.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        session: Database session.
+    
+    Returns:
+        FileResponse with the CSV file.
+    
+    Raises:
+        HTTPException: If dataset or file is not found.
+    """
     try:
         state = await orchestrator._get_state(session, dataset_id)
     except ValueError:
@@ -193,9 +262,20 @@ async def download_file(dataset_id: str, session: AsyncSession = Depends(get_ses
 
 @router.post("/chat/{dataset_id}")
 async def chat(
-    dataset_id: str, message: ChatMessageRequest, session: AsyncSession = Depends(get_session)
+    dataset_id: str, 
+    message: ChatMessageRequest, 
+    session: AsyncSession = Depends(get_session)
 ) -> ChatResponse:
-    """Chat with the dataset curator using LLM function calling."""
+    """Chat with the dataset curator using LLM function calling.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        message: Chat message from the user.
+        session: Database session.
+    
+    Returns:
+        ChatResponse with user and assistant messages.
+    """
     user_msg = message.content
     timestamp = pd.Timestamp.utcnow().isoformat()
     

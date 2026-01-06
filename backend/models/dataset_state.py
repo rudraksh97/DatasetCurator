@@ -1,3 +1,9 @@
+"""Dataset state management models.
+
+This module provides the DatasetState Pydantic model for managing
+the in-memory state of datasets being curated, including paths,
+schema, transformation history, and chat history.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +16,17 @@ if TYPE_CHECKING:
 
 
 class DatasetState(BaseModel):
-    """State for a dataset being curated."""
+    """State for a dataset being curated.
+    
+    Attributes:
+        dataset_id: Unique identifier for the dataset.
+        current_version: Current version number (incremented on changes).
+        raw_path: Path to the original uploaded file.
+        curated_path: Path to the latest curated version.
+        schema: Column names and their data types.
+        transformation_log: History of transformations applied.
+        chat_history: Conversation history for context.
+    """
     
     dataset_id: str
     current_version: int = 0
@@ -21,6 +37,11 @@ class DatasetState(BaseModel):
     chat_history: List[Dict[str, Any]] = Field(default_factory=list)
 
     def to_record_payload(self) -> Dict[str, Any]:
+        """Convert state to dictionary for database storage.
+        
+        Returns:
+            Dictionary with all fields serialized for the database.
+        """
         return {
             "dataset_id": self.dataset_id,
             "current_version": self.current_version,
@@ -33,6 +54,14 @@ class DatasetState(BaseModel):
 
     @classmethod
     def from_record(cls, record: "DatasetRecord") -> "DatasetState":
+        """Create a DatasetState from a database record.
+        
+        Args:
+            record: SQLAlchemy DatasetRecord instance.
+        
+        Returns:
+            DatasetState instance populated from the record.
+        """
         return cls(
             dataset_id=record.dataset_id,
             current_version=record.current_version,

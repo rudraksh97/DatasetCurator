@@ -1,4 +1,19 @@
-"""Efficient data loading for large datasets."""
+"""Efficient data loading utilities for large datasets.
+
+This module provides memory-efficient operations for handling large CSV files
+using chunked reading and streaming. It supports:
+
+- Smart loading with automatic large file detection
+- Chunked row counting and filtering
+- Streaming statistics calculation
+- Reservoir sampling for random row selection
+
+Thresholds:
+- LARGE_FILE_SIZE_MB: Files larger than 100MB are considered large
+- LARGE_ROW_COUNT: Datasets with over 1M rows are considered large
+- SAMPLE_SIZE: Default sample size for exploratory queries (10,000 rows)
+- CHUNK_SIZE: Processing chunk size (50,000 rows)
+"""
 from __future__ import annotations
 
 import os
@@ -15,12 +30,29 @@ CHUNK_SIZE = 50_000  # Chunk size for processing
 
 
 def get_file_size_mb(file_path: Path) -> float:
-    """Get file size in MB."""
+    """Get file size in megabytes.
+    
+    Args:
+        file_path: Path to the file.
+    
+    Returns:
+        File size in MB.
+    """
     return os.path.getsize(file_path) / (1024 * 1024)
 
 
 def estimate_row_count(file_path: Path) -> int:
-    """Quickly estimate row count without loading full file."""
+    """Quickly estimate row count without loading full file.
+    
+    Uses a sample of the first 1000 rows to estimate the average
+    row size, then extrapolates based on total file size.
+    
+    Args:
+        file_path: Path to CSV file.
+    
+    Returns:
+        Estimated number of rows.
+    """
     try:
         # Read first chunk to estimate
         chunk = pd.read_csv(file_path, nrows=1000)
@@ -37,7 +69,18 @@ def estimate_row_count(file_path: Path) -> int:
 
 
 def is_large_dataset(file_path: Path) -> Tuple[bool, Optional[int]]:
-    """Check if dataset is large and return estimated row count."""
+    """Check if dataset is large and return estimated row count.
+    
+    A dataset is considered large if:
+    - File size exceeds LARGE_FILE_SIZE_MB (100MB), OR
+    - Estimated rows exceed LARGE_ROW_COUNT (1M)
+    
+    Args:
+        file_path: Path to CSV file.
+    
+    Returns:
+        Tuple of (is_large, estimated_rows).
+    """
     if not file_path.exists():
         return False, None
     
@@ -55,13 +98,18 @@ def load_dataframe_smart(
 ) -> pd.DataFrame:
     """Load DataFrame with smart handling for large files.
     
+    For large files:
+    - If sample=True: Returns a random sample of SAMPLE_SIZE rows
+    - If max_rows specified: Returns first max_rows rows
+    - Otherwise: Returns first SAMPLE_SIZE rows
+    
     Args:
-        file_path: Path to CSV file
-        max_rows: Maximum rows to load (None = all)
-        sample: If True and file is large, load a random sample
+        file_path: Path to CSV file.
+        max_rows: Maximum rows to load (None = all for small files).
+        sample: If True and file is large, load a random sample.
     
     Returns:
-        DataFrame
+        DataFrame with loaded data.
     """
     if not file_path.exists():
         return pd.DataFrame()
@@ -92,16 +140,20 @@ def load_dataframe_smart(
     return pd.read_csv(file_path)
 
 
-def count_rows_chunked(file_path: Path, filter_column: Optional[str] = None, filter_value: Optional[str] = None) -> int:
+def count_rows_chunked(
+    file_path: Path, 
+    filter_column: Optional[str] = None, 
+    filter_value: Optional[str] = None
+) -> int:
     """Count rows efficiently using chunked reading.
     
     Args:
-        file_path: Path to CSV
-        filter_column: Optional column to filter by
-        filter_value: Optional value to match
+        file_path: Path to CSV file.
+        filter_column: Optional column to filter by.
+        filter_value: Optional value to match (case-insensitive).
     
     Returns:
-        Total count
+        Total count of matching rows.
     """
     count = 0
     try:
@@ -123,13 +175,16 @@ def calculate_stat_chunked(
 ) -> Optional[float]:
     """Calculate statistics efficiently using chunked reading.
     
+    Supports streaming calculation of mean, sum, min, and max
+    without loading the entire file into memory.
+    
     Args:
-        file_path: Path to CSV
-        column: Column name
-        stat: 'mean', 'sum', 'min', 'max'
+        file_path: Path to CSV file.
+        column: Column name to calculate statistics for.
+        stat: Statistic type: 'mean', 'sum', 'min', or 'max'.
     
     Returns:
-        Statistic value or None
+        Calculated statistic value, or None on error.
     """
     if stat not in ["mean", "sum", "min", "max"]:
         return None
@@ -191,13 +246,13 @@ def group_count_chunked(
     """Count groups efficiently using chunked reading.
     
     Args:
-        file_path: Path to CSV
-        column: Column to group by
+        file_path: Path to CSV file.
+        column: Column to group by.
     
     Returns:
-        Dictionary of {value: count}
+        Dictionary mapping {value: count}.
     """
-    counts = {}
+    counts: dict = {}
     try:
         for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
             if column in chunk.columns:
@@ -216,20 +271,22 @@ def get_random_sample_chunked(
     filter_value: Optional[str] = None,
     n: int = 1,
 ) -> pd.DataFrame:
-    """Get random sample efficiently from large file.
+    """Get random sample efficiently from large file using reservoir sampling.
+    
+    Uses reservoir sampling algorithm to select random rows without
+    loading the entire file into memory.
     
     Args:
-        file_path: Path to CSV
-        filter_column: Optional column to filter by
-        filter_value: Optional value to match
-        n: Number of samples
+        file_path: Path to CSV file.
+        filter_column: Optional column to filter by.
+        filter_value: Optional value to match (case-insensitive).
+        n: Number of samples to return.
     
     Returns:
-        DataFrame with samples
+        DataFrame with n random rows.
     """
     try:
         # For large files, use reservoir sampling approach
-        # Load chunks and randomly sample from them
         import random
         samples = []
         seen = 0
