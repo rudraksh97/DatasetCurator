@@ -81,11 +81,11 @@ def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
     return "\n".join([headers, separator] + rows)
 
 
-def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, object]:
+async def _preview_df(path: str, page: int = 1, page_size: int = 50) -> Dict[str, object]:
     """Get paginated preview of dataframe.
     
     Args:
-        path: Path to CSV file.
+        path: Path or S3 key to CSV file.
         page: Page number (1-indexed).
         page_size: Number of rows per page.
     
@@ -95,16 +95,19 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
     Raises:
         HTTPException: If the file cannot be read.
     """
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Data file not found: {path.name}")
+    storage = get_storage()
+    if not await storage.exists(path):
+        raise HTTPException(status_code=404, detail=f"Data file not found: {Path(path).name}")
     
     try:
-        df = pd.read_csv(path)
+        # Use storage abstraction to read CSV (handles both local and S3)
+        df = await storage.read_csv(path)
+        
         total_rows = len(df)
         total_pages = (total_rows + page_size - 1) // page_size
         
         skip = (page - 1) * page_size
-        page_data = df.iloc[skip:skip + page_size].to_dict(orient="records")
+        page_data = df.iloc[skip:skip + page_size].replace({float('nan'): None}).to_dict(orient="records")
         
         return {
             "data": page_data,
@@ -113,20 +116,17 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
             "total_rows": total_rows,
             "total_pages": total_pages,
         }
-    except pd.errors.EmptyDataError:
+    except Exception as e:
+        print(f"[API] Error reading preview for {path}: {e}")
+        # Return empty result safely for new empty files
         return {
             "data": [],
-            "page": 1,
+            "page": 1, 
             "page_size": page_size,
             "total_rows": 0,
             "total_pages": 0,
-            "warning": "File is empty",
+            "warning": f"Could not read file: {str(e)}"
         }
-    except pd.errors.ParserError as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
-    except Exception as e:
-        print(f"[API] Error reading preview for {path}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to read data file: {str(e)}")
 
 
 async def _embed_dataset_background(dataset_id: str, file_path: str) -> None:
@@ -138,7 +138,8 @@ async def _embed_dataset_background(dataset_id: str, file_path: str) -> None:
     """
     try:
         async with AsyncSessionLocal() as session:
-            df = pd.read_csv(file_path)
+            storage = get_storage()
+            df = await storage.read_csv(file_path)
             count = await embed_dataset(session, dataset_id, df)
             print(f"[Upload] Embedded {count} rows for dataset {dataset_id}")
     except Exception as e:
@@ -186,11 +187,12 @@ async def upload_dataset(
 
     state = await process_upload(session, dataset_id, target_path)
     
-    df = pd.read_csv(target_path)
+    # Use storage abstraction for reading
+    df = await storage.read_csv(str(target_path))
     row_count = int(len(df))
     column_count = int(len(df.columns))
 
-    preview_data = _preview_df(target_path, page=1, page_size=50)
+    preview_data = await _preview_df(str(target_path), page=1, page_size=50)
     
     background_tasks.add_task(_embed_dataset_background, dataset_id, str(target_path))
     
@@ -246,12 +248,22 @@ async def get_preview(
             "page_size": page_size,
             "total_rows": 0,
             "total_pages": 0,
+            "warning": "No data path available"
         }
     
-    preview_data = _preview_df(Path(data_path), page=page, page_size=page_size)
+    # Use async preview
+    preview_data = await _preview_df(data_path, page=page, page_size=page_size)
     
-    df_header = pd.read_csv(Path(data_path), nrows=1)
-    column_count = len(df_header.columns)
+    # Get column count from storage
+    storage = get_storage()
+    try:
+        # Read just the header
+        content = await storage.read_file(data_path)
+        import io
+        df_header = pd.read_csv(io.BytesIO(content), nrows=0)
+        column_count = len(df_header.columns)
+    except Exception:
+        column_count = 0
     
     return {
         "dataset_id": dataset_id,
