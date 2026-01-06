@@ -270,6 +270,98 @@ async def download_file(
     return FileResponse(path, media_type="text/csv", filename=path.name)
 
 
+async def _get_chat_context(session: AsyncSession, dataset_id: str) -> tuple:
+    """Get dataset state and context for chat."""
+    try:
+        state = await get_dataset_state(session, dataset_id)
+        has_data = bool(state.curated_path or state.raw_path)
+        columns = list(state.schema.keys()) if state.schema else []
+        return state, has_data, columns
+    except ValueError:
+        return None, False, []
+
+
+async def _handle_transform_intent(
+    state, 
+    user_msg: str, 
+    has_data: bool, 
+    columns: list
+) -> str:
+    """Handle data transformation intent."""
+    if not has_data:
+        return "**No data to transform.** Load a dataset first!"
+    
+    data_path = state.curated_path or state.raw_path
+    success, final_message, final_df = await execute_transformation(
+        user_message=user_msg,
+        data_path=data_path,
+        columns=columns,
+        max_retries=1,
+    )
+    
+    if final_df is not None and success:
+        version = state.current_version + 1
+        new_path = CURATED_STORAGE / f"{state.dataset_id}_v{version}.csv"
+        final_df.to_csv(new_path, index=False)
+        
+        state.curated_path = str(new_path)
+        state.current_version = version
+        
+        return final_message + f"\n\n**Preview:**\n\n{_df_to_markdown(final_df, 5)}"
+    
+    return final_message if final_message else "I couldn't understand your transformation request."
+
+
+def _get_welcome_message() -> str:
+    """Get the welcome message for users without data."""
+    return (
+        "**Welcome!** I can help you clean and transform datasets.\n\n"
+        "**Try:**\n"
+        "- Upload a CSV using the attachment button\n"
+        "- Transform your data with commands like *'remove column X'* or *'filter where Y > 10'*"
+    )
+
+
+async def _handle_chat_intent(
+    state, 
+    user_msg: str, 
+    has_data: bool, 
+    columns: list,
+    session: AsyncSession,
+    dataset_id: str,
+) -> str:
+    """Handle general chat intent."""
+    if not has_data:
+        return _get_welcome_message()
+    
+    context = {"columns": columns}
+    history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
+    data_path = state.curated_path or state.raw_path
+    
+    return await chat_with_agent(
+        user_msg, 
+        data_path=data_path, 
+        context=context, 
+        history=history,
+        session=session, 
+        dataset_id=dataset_id
+    )
+
+
+async def _save_chat_history(
+    session: AsyncSession, 
+    state, 
+    user_msg: str, 
+    response: str, 
+    timestamp: str
+) -> None:
+    """Save chat messages to history."""
+    if state:
+        state.chat_history.append({"role": "user", "content": user_msg, "timestamp": timestamp})
+        state.chat_history.append({"role": "assistant", "content": response, "timestamp": timestamp})
+        await upsert_dataset_state(session, state)
+
+
 @router.post("/chat/{dataset_id}")
 async def chat(
     dataset_id: str, 
@@ -289,75 +381,20 @@ async def chat(
     user_msg = message.content
     timestamp = pd.Timestamp.utcnow().isoformat()
     
-    # Get existing state
-    try:
-        state = await get_dataset_state(session, dataset_id)
-        has_data = bool(state.curated_path or state.raw_path)
-        columns = list(state.schema.keys()) if state.schema else []
-    except ValueError:
-        state = None
-        has_data = False
-        columns = []
+    state, has_data, columns = await _get_chat_context(session, dataset_id)
 
-    # Use LLM to classify intent
-    intent_result = await classify_intent(
-        user_msg,
-        has_data=has_data,
-        columns=columns,
-    )
+    intent_result = await classify_intent(user_msg, has_data=has_data, columns=columns)
     intent = intent_result.get("intent", "chat")
     
-    # Check for classification errors and surface them
     if intent_result.get("error"):
         print(f"[Chat] Intent classification warning: {intent_result.get('error')}")
 
-    response = ""
-
-    # Handle intents
+    # Dispatch to intent handler
     if intent in ("transform_data", "multi_transform"):
-        # All transformations go through LangGraph (handles both single & multi-step)
-        if not has_data:
-            response = "**No data to transform.** Load a dataset first!"
-        else:
-            data_path = state.curated_path or state.raw_path
-            success, final_message, final_df = await execute_transformation(
-                user_message=user_msg,
-                data_path=data_path,
-                columns=columns,
-                max_retries=1,
-            )
-            
-            if final_df is not None and success:
-                version = state.current_version + 1
-                new_path = CURATED_STORAGE / f"{state.dataset_id}_v{version}.csv"
-                final_df.to_csv(new_path, index=False)
-                
-                state.curated_path = str(new_path)
-                state.current_version = version
-                
-                response = final_message + f"\n\n**Preview:**\n\n{_df_to_markdown(final_df, 5)}"
-            else:
-                response = final_message if final_message else "I couldn't understand your transformation request."
-    
-    else:  # chat
-        if not has_data:
-            response = "**Welcome!** I can help you clean and transform datasets.\n\n"
-            response += "**Try:**\n"
-            response += "- Upload a CSV using the attachment button\n"
-            response += "- Transform your data with commands like *'remove column X'* or *'filter where Y > 10'*"
-        else:
-            context = {"columns": columns}
-            history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
-            data_path = state.curated_path or state.raw_path
-            response = await chat_with_agent(
-                user_msg, data_path=data_path, context=context, history=history,
-                session=session, dataset_id=dataset_id
-            )
+        response = await _handle_transform_intent(state, user_msg, has_data, columns)
+    else:
+        response = await _handle_chat_intent(state, user_msg, has_data, columns, session, dataset_id)
 
-    # Save chat history
-    if state:
-        state.chat_history.append({"role": "user", "content": user_msg, "timestamp": timestamp})
-        state.chat_history.append({"role": "assistant", "content": response, "timestamp": timestamp})
-        await upsert_dataset_state(session, state)
+    await _save_chat_history(session, state, user_msg, response, timestamp)
 
     return ChatResponse(user_message=user_msg, assistant_message=response)

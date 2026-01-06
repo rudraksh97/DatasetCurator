@@ -241,6 +241,48 @@ def check_approval_node(state: TransformationState) -> TransformationState:
     }
 
 
+def _create_step_result(
+    step_num: int,
+    description: str,
+    operation: str,
+    status: StepStatus,
+    message: str,
+    rows_before: int = 0,
+    rows_after: int = 0,
+    retry_count: int = 0,
+) -> StepResult:
+    """Create a StepResult with the given parameters."""
+    return StepResult(
+        step_num=step_num,
+        description=description,
+        operation=operation,
+        status=status,
+        message=message,
+        rows_before=rows_before,
+        rows_after=rows_after,
+        retry_count=retry_count,
+    )
+
+
+def _get_retry_count_for_step(results: List[StepResult], step_num: int) -> tuple[int, List[StepResult]]:
+    """Get retry count for a step and remove previous result if exists."""
+    retry_count = 0
+    updated_results = list(results)
+    for r in updated_results:
+        if r.step_num == step_num:
+            retry_count = r.retry_count + 1
+            updated_results.remove(r)
+            break
+    return retry_count, updated_results
+
+
+def _execute_operation(df: pd.DataFrame, operation: str, params: Dict) -> tuple[bool, str, Optional[pd.DataFrame]]:
+    """Execute a data operation and return (success, message, result_df)."""
+    operator = DataOperator(df)
+    success, msg = operator.execute(operation, params)
+    return success, msg, operator.get_result() if success else None
+
+
 def execute_step_node(state: TransformationState) -> TransformationState:
     """Execute the current step."""
     idx = state["current_step_idx"]
@@ -256,92 +298,48 @@ def execute_step_node(state: TransformationState) -> TransformationState:
     df = state["df"]
     results = list(state["results"])
     
+    # Handle missing data
     if df is None:
-        result = StepResult(
-            step_num=step_num,
-            description=description,
-            operation=operation or "unknown",
-            status=StepStatus.FAILED,
-            message="No data loaded",
-        )
-        results.append(result)
-        return {**state, "results": results, "error_message": "No data loaded"}
+        result = _create_step_result(step_num, description, operation or "unknown", StepStatus.FAILED, "No data loaded")
+        return {**state, "results": results + [result], "error_message": "No data loaded"}
     
+    # Handle missing operation
     if not operation:
-        result = StepResult(
-            step_num=step_num,
-            description=description,
-            operation="unknown",
-            status=StepStatus.SKIPPED,
-            message="No operation specified",
-        )
-        results.append(result)
-        return {**state, "results": results, "current_step_idx": idx + 1}
+        result = _create_step_result(step_num, description, "unknown", StepStatus.SKIPPED, "No operation specified")
+        return {**state, "results": results + [result], "current_step_idx": idx + 1}
     
     rows_before = len(df)
     
     try:
-        operator = DataOperator(df)
-        success, msg = operator.execute(operation, params)
+        success, msg, new_df = _execute_operation(df, operation, params)
         
-        if success:
-            new_df = operator.get_result()
-            result = StepResult(
-                step_num=step_num,
-                description=description,
-                operation=operation,
-                status=StepStatus.SUCCESS,
-                message=msg,
-                rows_before=rows_before,
-                rows_after=len(new_df),
+        if success and new_df is not None:
+            result = _create_step_result(
+                step_num, description, operation, StepStatus.SUCCESS, msg,
+                rows_before=rows_before, rows_after=len(new_df)
             )
-            results.append(result)
             return {
                 **state,
                 "df": new_df,
-                "results": results,
+                "results": results + [result],
                 "current_step_idx": idx + 1,
                 "error_message": "",
             }
-        else:
-            # Track retry count
-            retry_count = 0
-            for r in results:
-                if r.step_num == step_num:
-                    retry_count = r.retry_count + 1
-                    results.remove(r)
-                    break
-            
-            result = StepResult(
-                step_num=step_num,
-                description=description,
-                operation=operation,
-                status=StepStatus.FAILED,
-                message=msg,
-                rows_before=rows_before,
-                retry_count=retry_count,
-            )
-            results.append(result)
-            return {
-                **state,
-                "results": results,
-                "error_message": msg,
-            }
-    except Exception as e:
-        result = StepResult(
-            step_num=step_num,
-            description=description,
-            operation=operation,
-            status=StepStatus.FAILED,
-            message=str(e),
-            rows_before=rows_before,
+        
+        # Operation failed - track retry count
+        retry_count, results = _get_retry_count_for_step(results, step_num)
+        result = _create_step_result(
+            step_num, description, operation, StepStatus.FAILED, msg,
+            rows_before=rows_before, retry_count=retry_count
         )
-        results.append(result)
-        return {
-            **state,
-            "results": results,
-            "error_message": str(e),
-        }
+        return {**state, "results": results + [result], "error_message": msg}
+        
+    except Exception as e:
+        result = _create_step_result(
+            step_num, description, operation, StepStatus.FAILED, str(e),
+            rows_before=rows_before
+        )
+        return {**state, "results": results + [result], "error_message": str(e)}
 
 
 def validate_step_node(state: TransformationState) -> TransformationState:

@@ -562,386 +562,463 @@ def _convert_to_native_type(value: Any) -> Any:
     return value
 
 
+# ---- Data Query Handlers ---------------------------------------------------
+
+def _find_column_case_insensitive(df: pd.DataFrame, column: str) -> Optional[str]:
+    """Find a column by name (case-insensitive)."""
+    if column in df.columns:
+        return column
+    for c in df.columns:
+        if c.lower() == column.lower():
+            return c
+    return None
+
+
+def _coerce_filter_value(df: pd.DataFrame, column: str, value: Any) -> Any:
+    """Try to coerce a filter value to match column dtype."""
+    try:
+        if pd.api.types.is_integer_dtype(df[column].dtype):
+            return int(value)
+        elif pd.api.types.is_float_dtype(df[column].dtype):
+            return float(value)
+    except (ValueError, TypeError):
+        pass
+    return value
+
+
+def _query_find_columns(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Find columns that match keywords."""
+    keywords = arguments.get("keywords", [])
+    if not keywords:
+        return {"success": False, "error": "Missing keywords parameter"}
+    
+    matched_columns = []
+    keyword_lower = [k.lower() for k in keywords]
+    
+    for col in df.columns:
+        col_lower = col.lower()
+        for keyword in keyword_lower:
+            if keyword in col_lower or col_lower in keyword:
+                matched_columns.append({"column": col, "matched_keyword": keyword})
+                break
+    
+    if not matched_columns:
+        return {
+            "success": False,
+            "error": f"No columns found matching keywords: {', '.join(keywords)}. Available columns: {', '.join(df.columns.tolist())}"
+        }
+    
+    return {
+        "success": True,
+        "keywords": keywords,
+        "matched_columns": matched_columns,
+        "column_names": [c["column"] for c in matched_columns],
+    }
+
+
+def _query_search_rows(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Search for rows containing a keyword (partial, case-insensitive match)."""
+    column = arguments.get("column")
+    keyword = arguments.get("keyword", "")
+    limit = arguments.get("limit", 5)
+    
+    if not column:
+        return {"success": False, "error": "Missing column parameter"}
+    
+    col_match = _find_column_case_insensitive(df, column)
+    if not col_match:
+        return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
+    
+    col_values = df[col_match].astype(str).str.lower()
+    keyword_lower = keyword.lower()
+    
+    # Try multiple search strategies
+    mask = col_values.str.contains(keyword_lower, na=False, regex=False)
+    
+    if mask.sum() == 0:
+        keyword_nospace = keyword_lower.replace(" ", "")
+        mask = col_values.str.contains(keyword_nospace, na=False, regex=False)
+    
+    if mask.sum() == 0:
+        words = keyword_lower.split()
+        if len(words) > 1:
+            mask = pd.Series([True] * len(df), index=df.index)
+            for word in words:
+                mask = mask & col_values.str.contains(word, na=False, regex=False)
+    
+    matches = df[mask].head(limit)
+    
+    if len(matches) == 0:
+        return {"success": False, "error": f"No rows found containing '{keyword}' in column '{col_match}'"}
+    
+    found_values = [_convert_to_native_type(v) for v in matches[col_match].tolist()]
+    
+    return {
+        "success": True,
+        "column": col_match,
+        "keyword": keyword,
+        "matches": found_values,
+        "total_matches": int(mask.sum()),
+        "showing": len(found_values),
+    }
+
+
+def _query_get_row(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get a row matching conditions."""
+    column = arguments.get("column")
+    value = arguments.get("value")
+    
+    if not column or value is None:
+        return {"success": False, "error": "Missing column or value"}
+    
+    value = _coerce_filter_value(df, column, value)
+    matches = df[df[column] == value]
+    
+    if len(matches) > 0:
+        row_data = {k: _convert_to_native_type(v) for k, v in matches.iloc[0].to_dict().items()}
+        return {"success": True, "data": row_data, "row_count": int(len(matches))}
+    
+    return {"success": False, "error": f"No rows found where {column} == {value}"}
+
+
+def _query_get_value(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get a specific value from a row."""
+    column = arguments.get("column")
+    filter_column = arguments.get("filter_column")
+    filter_value = arguments.get("filter_value")
+    
+    if not all([column, filter_column, filter_value]):
+        return {"success": False, "error": "Missing required parameters"}
+    
+    filter_value = _coerce_filter_value(df, filter_column, filter_value)
+    matches = df[df[filter_column] == filter_value]
+    
+    if len(matches) > 0:
+        value = _convert_to_native_type(matches.iloc[0][column])
+        return {"success": True, "value": value, "row_count": int(len(matches))}
+    
+    return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
+
+
+def _query_calculate_ratio(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Calculate ratio between two columns."""
+    numerator_col = arguments.get("numerator_column")
+    denominator_col = arguments.get("denominator_column")
+    filter_column = arguments.get("filter_column")
+    filter_value = arguments.get("filter_value")
+    
+    if not numerator_col or not denominator_col:
+        return {"success": False, "error": "Missing numerator or denominator column"}
+    
+    df_subset = df
+    if filter_column and filter_value:
+        filter_value = _coerce_filter_value(df, filter_column, filter_value)
+        matches = df[df[filter_column] == filter_value]
+        if len(matches) == 0:
+            return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
+        df_subset = matches
+    
+    numerator = df_subset[numerator_col].sum()
+    denominator = df_subset[denominator_col].sum()
+    
+    if denominator == 0:
+        return {"success": False, "error": "Denominator is zero"}
+    
+    return {
+        "success": True,
+        "numerator": _convert_to_native_type(numerator),
+        "denominator": _convert_to_native_type(denominator),
+        "ratio": _convert_to_native_type(numerator / denominator),
+        "row_count": int(len(df_subset))
+    }
+
+
+def _apply_filter_to_df(df: pd.DataFrame, filter_column: str, filter_value: Any) -> tuple[pd.DataFrame, str, Optional[str]]:
+    """Apply a filter to a DataFrame and return (filtered_df, filter_info, error)."""
+    filter_col_match = _find_column_case_insensitive(df, filter_column)
+    if not filter_col_match:
+        return df, "", f"Filter column '{filter_column}' not found. Available: {', '.join(df.columns[:10])}"
+    
+    filter_value = _coerce_filter_value(df, filter_col_match, filter_value)
+    
+    # Try exact match first
+    matches = df[df[filter_col_match].astype(str).str.lower() == str(filter_value).lower()]
+    
+    # If no exact match, try partial match
+    if len(matches) == 0:
+        matches = df[df[filter_col_match].astype(str).str.lower().str.contains(str(filter_value).lower(), na=False)]
+    
+    if len(matches) == 0:
+        return df, "", f"No rows found where {filter_col_match} matches '{filter_value}'"
+    
+    filter_info = f" (filtered by {filter_col_match} = '{filter_value}', {len(matches)} rows)"
+    return matches, filter_info, None
+
+
+def _query_get_statistics(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get basic statistics with optional filtering."""
+    column = arguments.get("column")
+    filter_column = arguments.get("filter_column")
+    filter_value = arguments.get("filter_value")
+    
+    if not column:
+        return {"success": False, "error": "Missing column parameter"}
+    
+    col_match = _find_column_case_insensitive(df, column)
+    if not col_match:
+        return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
+    
+    df_subset = df
+    filter_info = ""
+    
+    if filter_column and filter_value:
+        df_subset, filter_info, error = _apply_filter_to_df(df, filter_column, filter_value)
+        if error:
+            return {"success": False, "error": error}
+    
+    if not pd.api.types.is_numeric_dtype(df_subset[col_match]):
+        return {"success": False, "error": f"Column '{col_match}' is not numeric. Cannot calculate mean/variance/std/min/max."}
+    
+    stats = {
+        "count": _convert_to_native_type(df_subset[col_match].count()),
+        "nulls": _convert_to_native_type(df_subset[col_match].isna().sum()),
+        "mean": _convert_to_native_type(df_subset[col_match].mean()),
+        "variance": _convert_to_native_type(df_subset[col_match].var()),
+        "std": _convert_to_native_type(df_subset[col_match].std()),
+        "min": _convert_to_native_type(df_subset[col_match].min()),
+        "max": _convert_to_native_type(df_subset[col_match].max()),
+        "filter_info": filter_info if filter_info else None,
+    }
+    return {"success": True, "statistics": stats}
+
+
+def _query_group_by(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Group by a column and optionally aggregate."""
+    column = arguments.get("column")
+    agg_function = arguments.get("aggregation", "count")
+    agg_column = arguments.get("aggregation_column")
+    
+    if not column:
+        return {"success": False, "error": "Missing column parameter"}
+    
+    col_match = _find_column_case_insensitive(df, column)
+    if not col_match:
+        return {"success": False, "error": f"Column '{column}' not found"}
+    
+    try:
+        grouped = df.groupby(col_match)
+        
+        if agg_function == "count":
+            result = grouped.size().to_dict()
+        elif agg_column:
+            if agg_column not in df.columns:
+                return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
+            agg_map = {"sum": "sum", "mean": "mean", "min": "min", "max": "max"}
+            if agg_function in agg_map:
+                result = getattr(grouped[agg_column], agg_map[agg_function])().to_dict()
+            else:
+                result = grouped.size().to_dict()
+        else:
+            result = grouped.size().to_dict()
+        
+        result = {str(k): _convert_to_native_type(v) for k, v in result.items()}
+        
+        return {
+            "success": True,
+            "group_by": col_match,
+            "aggregation": agg_function,
+            "results": result,
+            "total_groups": len(result)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def _query_get_random_value(df: pd.DataFrame, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Get a random value from a column, or a random row."""
+    column = arguments.get("column")
+    
+    if len(df) == 0:
+        return {"success": False, "error": "Dataset is empty"}
+    
+    try:
+        if column:
+            col_match = _find_column_case_insensitive(df, column)
+            if not col_match:
+                return {"success": False, "error": f"Column '{column}' not found"}
+            
+            non_null_values = df[col_match].dropna()
+            if len(non_null_values) == 0:
+                return {"success": False, "error": f"Column '{col_match}' has no non-null values"}
+            
+            random_value = non_null_values.sample(n=1).iloc[0]
+            return {"success": True, "column": col_match, "value": _convert_to_native_type(random_value)}
+        else:
+            random_row = df.sample(n=1).iloc[0]
+            row_data = {k: _convert_to_native_type(v) for k, v in random_row.to_dict().items()}
+            return {"success": True, "row": row_data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# Query handler dispatch table
+_QUERY_HANDLERS: Dict[str, callable] = {
+    "find_columns": _query_find_columns,
+    "search_rows": _query_search_rows,
+    "get_row": _query_get_row,
+    "get_value": _query_get_value,
+    "calculate_ratio": _query_calculate_ratio,
+    "get_statistics": _query_get_statistics,
+    "group_by": _query_group_by,
+    "get_random_value": _query_get_random_value,
+}
+
+
 def _execute_data_query(df: pd.DataFrame, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a data query function on the DataFrame."""
     try:
-        if function_name == "find_columns":
-            # Find columns that match keywords
-            keywords = arguments.get("keywords", [])
-            if not keywords:
-                return {"success": False, "error": "Missing keywords parameter"}
-            
-            matched_columns = []
-            keyword_lower = [k.lower() for k in keywords]
-            
-            for col in df.columns:
-                col_lower = col.lower()
-                # Check if any keyword matches the column name (partial match)
-                for keyword in keyword_lower:
-                    if keyword in col_lower or col_lower in keyword:
-                        matched_columns.append({
-                            "column": col,
-                            "matched_keyword": keyword,
-                        })
-                        break  # Only add once per column
-            
-            if not matched_columns:
-                return {
-                    "success": False,
-                    "error": f"No columns found matching keywords: {', '.join(keywords)}. Available columns: {', '.join(df.columns.tolist())}"
-                }
-            
-            return {
-                "success": True,
-                "keywords": keywords,
-                "matched_columns": matched_columns,
-                "column_names": [c["column"] for c in matched_columns],
-            }
-        
-        elif function_name == "search_rows":
-            # Search for rows containing a keyword (partial, case-insensitive match)
-            column = arguments.get("column")
-            keyword = arguments.get("keyword", "")
-            limit = arguments.get("limit", 5)
-            
-            if not column:
-                return {"success": False, "error": "Missing column parameter"}
-            
-            # Case-insensitive column lookup
-            col_match = None
-            for c in df.columns:
-                if c.lower() == column.lower():
-                    col_match = c
-                    break
-            
-            if not col_match:
-                return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
-            
-            col_values = df[col_match].astype(str).str.lower()
-            keyword_lower = keyword.lower()
-            
-            # Try multiple search strategies:
-            # 1. Exact substring match
-            mask = col_values.str.contains(keyword_lower, na=False, regex=False)
-            
-            # 2. If no match, try without spaces (e.g., "3 sum" -> "3sum")
-            if mask.sum() == 0:
-                keyword_nospace = keyword_lower.replace(" ", "")
-                mask = col_values.str.contains(keyword_nospace, na=False, regex=False)
-            
-            # 3. If still no match, try matching all words separately
-            if mask.sum() == 0:
-                words = keyword_lower.split()
-                if len(words) > 1:
-                    # All words must be present (in any order)
-                    mask = pd.Series([True] * len(df), index=df.index)
-                    for word in words:
-                        mask = mask & col_values.str.contains(word, na=False, regex=False)
-            
-            matches = df[mask].head(limit)
-            
-            if len(matches) == 0:
-                return {"success": False, "error": f"No rows found containing '{keyword}' in column '{col_match}'"}
-            
-            # Return matching values from the searched column and row count
-            found_values = matches[col_match].tolist()
-            found_values = [_convert_to_native_type(v) for v in found_values]
-            
-            return {
-                "success": True,
-                "column": col_match,
-                "keyword": keyword,
-                "matches": found_values,
-                "total_matches": int(mask.sum()),
-                "showing": len(found_values),
-            }
-        
-        elif function_name == "get_row":
-            # Get a row matching conditions
-            column = arguments.get("column")
-            value = arguments.get("value")
-            if column and value:
-                # Try type conversion
-                try:
-                    if pd.api.types.is_integer_dtype(df[column].dtype):
-                        value = int(value)
-                    elif pd.api.types.is_float_dtype(df[column].dtype):
-                        value = float(value)
-                except (ValueError, TypeError):
-                    pass
-                
-                matches = df[df[column] == value]
-                if len(matches) > 0:
-                    row_data = matches.iloc[0].to_dict()
-                    # Convert all values to native types
-                    row_data = {k: _convert_to_native_type(v) for k, v in row_data.items()}
-                    return {"success": True, "data": row_data, "row_count": int(len(matches))}
-                return {"success": False, "error": f"No rows found where {column} == {value}"}
-            return {"success": False, "error": "Missing column or value"}
-        
-        elif function_name == "get_value":
-            # Get a specific value from a row
-            column = arguments.get("column")
-            filter_column = arguments.get("filter_column")
-            filter_value = arguments.get("filter_value")
-            if column and filter_column and filter_value:
-                # Try type conversion
-                try:
-                    if pd.api.types.is_integer_dtype(df[filter_column].dtype):
-                        filter_value = int(filter_value)
-                    elif pd.api.types.is_float_dtype(df[filter_column].dtype):
-                        filter_value = float(filter_value)
-                except (ValueError, TypeError):
-                    pass
-                
-                matches = df[df[filter_column] == filter_value]
-                if len(matches) > 0:
-                    value = matches.iloc[0][column]
-                    value = _convert_to_native_type(value)
-                    return {"success": True, "value": value, "row_count": int(len(matches))}
-                return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
-            return {"success": False, "error": "Missing required parameters"}
-        
-        elif function_name == "calculate_ratio":
-            # Calculate ratio between two columns
-            numerator_col = arguments.get("numerator_column")
-            denominator_col = arguments.get("denominator_column")
-            filter_column = arguments.get("filter_column")
-            filter_value = arguments.get("filter_value")
-            
-            if numerator_col and denominator_col:
-                if filter_column and filter_value:
-                    # Filter first
-                    try:
-                        if pd.api.types.is_integer_dtype(df[filter_column].dtype):
-                            filter_value = int(filter_value)
-                        elif pd.api.types.is_float_dtype(df[filter_column].dtype):
-                            filter_value = float(filter_value)
-                    except (ValueError, TypeError):
-                        pass
-                    matches = df[df[filter_column] == filter_value]
-                    if len(matches) == 0:
-                        return {"success": False, "error": f"No rows found where {filter_column} == {filter_value}"}
-                    df_subset = matches
-                else:
-                    df_subset = df
-                
-                numerator = df_subset[numerator_col].sum()
-                denominator = df_subset[denominator_col].sum()
-                if denominator == 0:
-                    return {"success": False, "error": "Denominator is zero"}
-                ratio = numerator / denominator
-                return {
-                    "success": True,
-                    "numerator": _convert_to_native_type(numerator),
-                    "denominator": _convert_to_native_type(denominator),
-                    "ratio": _convert_to_native_type(ratio),
-                    "row_count": int(len(df_subset))
-                }
-            return {"success": False, "error": "Missing numerator or denominator column"}
-        
-        elif function_name == "get_statistics":
-            # Get basic statistics with optional filtering
-            column = arguments.get("column")
-            filter_column = arguments.get("filter_column")
-            filter_value = arguments.get("filter_value")
-            
-            if not column:
-                return {"success": False, "error": "Missing column parameter"}
-            
-            # Find the actual column name (case-insensitive)
-            col_match = None
-            for c in df.columns:
-                if c.lower() == column.lower():
-                    col_match = c
-                    break
-            
-            if not col_match:
-                return {"success": False, "error": f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}"}
-            
-            # Apply filter if provided
-            df_subset = df
-            filter_info = ""
-            if filter_column and filter_value:
-                # Find filter column (case-insensitive)
-                filter_col_match = None
-                for c in df.columns:
-                    if c.lower() == filter_column.lower():
-                        filter_col_match = c
-                        break
-                
-                if not filter_col_match:
-                    return {"success": False, "error": f"Filter column '{filter_column}' not found. Available: {', '.join(df.columns[:10])}"}
-                
-                # Try type conversion for filter value
-                try:
-                    if pd.api.types.is_integer_dtype(df[filter_col_match].dtype):
-                        filter_value = int(filter_value)
-                    elif pd.api.types.is_float_dtype(df[filter_col_match].dtype):
-                        filter_value = float(filter_value)
-                except (ValueError, TypeError):
-                    pass
-                
-                # Try exact match first
-                matches = df[df[filter_col_match].astype(str).str.lower() == str(filter_value).lower()]
-                
-                # If no exact match, try partial match
-                if len(matches) == 0:
-                    matches = df[df[filter_col_match].astype(str).str.lower().str.contains(str(filter_value).lower(), na=False)]
-                
-                if len(matches) == 0:
-                    return {"success": False, "error": f"No rows found where {filter_col_match} matches '{filter_value}'"}
-                
-                df_subset = matches
-                filter_info = f" (filtered by {filter_col_match} = '{filter_value}', {len(df_subset)} rows)"
-            
-            # Calculate statistics on the subset
-            if not pd.api.types.is_numeric_dtype(df_subset[col_match]):
-                return {"success": False, "error": f"Column '{col_match}' is not numeric. Cannot calculate mean/variance/std/min/max."}
-            
-            stats = {
-                "count": _convert_to_native_type(df_subset[col_match].count()),
-                "nulls": _convert_to_native_type(df_subset[col_match].isna().sum()),
-                "mean": _convert_to_native_type(df_subset[col_match].mean()),
-                "variance": _convert_to_native_type(df_subset[col_match].var()),
-                "std": _convert_to_native_type(df_subset[col_match].std()),
-                "min": _convert_to_native_type(df_subset[col_match].min()),
-                "max": _convert_to_native_type(df_subset[col_match].max()),
-                "filter_info": filter_info if filter_info else None,
-            }
-            return {"success": True, "statistics": stats}
-        
-        elif function_name == "group_by":
-            # Group by a column and optionally aggregate
-            column = arguments.get("column")
-            agg_function = arguments.get("aggregation", "count")  # count, sum, mean, etc.
-            agg_column = arguments.get("aggregation_column")  # Optional: column to aggregate
-            
-            if not column:
-                return {"success": False, "error": "Missing column parameter"}
-            
-            if column not in df.columns:
-                # Try case-insensitive match
-                matches = [c for c in df.columns if c.lower() == column.lower()]
-                if matches:
-                    column = matches[0]
-                else:
-                    return {"success": False, "error": f"Column '{column}' not found"}
-            
-            try:
-                grouped = df.groupby(column)
-                
-                if agg_function == "count":
-                    result = grouped.size().to_dict()
-                elif agg_function == "sum" and agg_column:
-                    if agg_column not in df.columns:
-                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
-                    result = grouped[agg_column].sum().to_dict()
-                elif agg_function == "mean" and agg_column:
-                    if agg_column not in df.columns:
-                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
-                    result = grouped[agg_column].mean().to_dict()
-                elif agg_function == "min" and agg_column:
-                    if agg_column not in df.columns:
-                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
-                    result = grouped[agg_column].min().to_dict()
-                elif agg_function == "max" and agg_column:
-                    if agg_column not in df.columns:
-                        return {"success": False, "error": f"Aggregation column '{agg_column}' not found"}
-                    result = grouped[agg_column].max().to_dict()
-                else:
-                    result = grouped.size().to_dict()
-                
-                # Convert to native types
-                result = {str(k): _convert_to_native_type(v) for k, v in result.items()}
-                
-                return {
-                    "success": True,
-                    "group_by": column,
-                    "aggregation": agg_function,
-                    "results": result,
-                    "total_groups": len(result)
-                }
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-        
-        elif function_name == "get_random_value":
-            # Get a random value from a column, or a random row
-            column = arguments.get("column")
-            
-            if len(df) == 0:
-                return {"success": False, "error": "Dataset is empty"}
-            
-            try:
-                if column:
-                    # Get random value from specific column
-                    if column not in df.columns:
-                        # Try case-insensitive match
-                        matches = [c for c in df.columns if c.lower() == column.lower()]
-                        if matches:
-                            column = matches[0]
-                        else:
-                            return {"success": False, "error": f"Column '{column}' not found"}
-                    
-                    # Filter out null values
-                    non_null_values = df[column].dropna()
-                    if len(non_null_values) == 0:
-                        return {"success": False, "error": f"Column '{column}' has no non-null values"}
-                    
-                    random_value = non_null_values.sample(n=1).iloc[0]
-                    return {
-                        "success": True,
-                        "column": column,
-                        "value": _convert_to_native_type(random_value)
-                    }
-                else:
-                    # Get random row
-                    random_row = df.sample(n=1).iloc[0]
-                    row_data = random_row.to_dict()
-                    row_data = {k: _convert_to_native_type(v) for k, v in row_data.items()}
-                    return {
-                        "success": True,
-                        "row": row_data
-                    }
-            except Exception as e:
-                return {"success": False, "error": str(e)}
-        
-        elif function_name == "list_columns":
+        # Handle simple queries directly
+        if function_name == "list_columns":
             return {"success": True, "columns": list(df.columns), "row_count": int(len(df))}
         
-        elif function_name == "get_row_count":
+        if function_name == "get_row_count":
             return {"success": True, "row_count": int(len(df)), "column_count": int(len(df.columns))}
+        
+        # Dispatch to handler
+        handler = _QUERY_HANDLERS.get(function_name)
+        if handler:
+            return handler(df, arguments)
         
         return {"success": False, "error": f"Unknown function: {function_name}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 
-async def _interpret_and_execute_query(
+# ---- Query Execution Helpers -----------------------------------------------
+
+def _execute_count_query(
     df: Optional[pd.DataFrame],
-    user_message: str,
-    columns: List[str],
-    data_path: Optional[str] = None,
-) -> str:
-    """Use LLM to interpret the query and execute it efficiently (handles large datasets)."""
-    from data_loader import (
-        is_large_dataset,
-        count_rows_chunked,
-        calculate_stat_chunked,
-        group_count_chunked,
-        get_random_sample_chunked,
-    )
+    column: str,
+    value: str,
+    is_large: bool,
+    data_path: Optional[str],
+) -> Optional[str]:
+    """Execute a count query."""
+    from data_loader import count_rows_chunked
     
-    # Check if dataset is large
-    is_large = False
-    if data_path:
-        path = Path(data_path)
-        is_large, _ = is_large_dataset(path)
+    if is_large and data_path:
+        count = count_rows_chunked(Path(data_path), column, value)
+    elif df is not None:
+        count = len(df[df[column].astype(str).str.lower() == str(value).lower()])
+    else:
+        return None
+    return f"COUNT: There are **{count}** rows where {column} = '{value}'"
+
+
+def _execute_stat_query(
+    df: Optional[pd.DataFrame],
+    column: str,
+    stat: Optional[str],
+    is_large: bool,
+    data_path: Optional[str],
+) -> Optional[str]:
+    """Execute a statistics query."""
+    from data_loader import calculate_stat_chunked
     
-    row_count = len(df) if df is not None else 0
+    stat = stat or "mean"
     
-    # Ask LLM to generate a simple query plan
-    plan_prompt = f"""Given this user question about a dataset, output a JSON query plan.
+    if is_large and data_path:
+        result = calculate_stat_chunked(Path(data_path), column, stat)
+    elif df is not None:
+        if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
+            return f"ERROR: Column '{column}' is not numeric"
+        stat_funcs = {"mean": df[column].mean, "sum": df[column].sum, "min": df[column].min, "max": df[column].max}
+        result = stat_funcs.get(stat, df[column].mean)()
+    else:
+        return None
+    
+    if result is not None:
+        return f"STATISTIC: The {stat} of {column} is **{result:.2f}**"
+    return f"ERROR: Could not calculate {stat} for {column}"
+
+
+def _execute_group_count_query(
+    df: Optional[pd.DataFrame],
+    column: str,
+    is_large: bool,
+    data_path: Optional[str],
+) -> Optional[str]:
+    """Execute a group count query."""
+    from data_loader import group_count_chunked
+    
+    if is_large and data_path:
+        counts = group_count_chunked(Path(data_path), column)
+    elif df is not None and column in df.columns:
+        counts = df[column].value_counts().to_dict()
+    else:
+        return None
+    
+    result_str = "\n".join([f"- {k}: {v}" for k, v in counts.items()])
+    return f"GROUP COUNT by {column}:\n{result_str}"
+
+
+def _execute_random_query(
+    df: Optional[pd.DataFrame],
+    column: Optional[str],
+    value: Optional[str],
+    is_large: bool,
+    data_path: Optional[str],
+) -> Optional[str]:
+    """Execute a random sample query."""
+    from data_loader import get_random_sample_chunked
+    
+    if is_large and data_path:
+        sample_df = get_random_sample_chunked(Path(data_path), column, value, n=1)
+        if len(sample_df) > 0:
+            sample = sample_df.iloc[0]
+        else:
+            return f"No rows found where {column} = '{value}'" if column and value else "No data available"
+    elif df is not None:
+        if column and value:
+            filtered = df[df[column].astype(str).str.lower() == str(value).lower()]
+            if len(filtered) > 0:
+                sample = filtered.sample(n=1).iloc[0]
+            else:
+                return f"No rows found where {column} = '{value}'"
+        else:
+            sample = df.sample(n=1).iloc[0]
+    else:
+        return None
+    
+    return f"RANDOM SAMPLE:\n{sample.to_dict()}"
+
+
+def _execute_search_query(
+    df: Optional[pd.DataFrame],
+    column: str,
+    value: str,
+    is_large: bool,
+    data_path: Optional[str],
+) -> Optional[str]:
+    """Execute a search query."""
+    search_df = df if df is not None else _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE, sample=True)
+    
+    if search_df is None or column not in search_df.columns:
+        return f"ERROR: Column '{column}' not found"
+    
+    matches = search_df[search_df[column].astype(str).str.lower().str.contains(str(value).lower(), na=False)]
+    
+    if len(matches) > 0:
+        results = matches.head(5)[column].tolist()
+        note = " (showing results from sample)" if is_large else ""
+        return f"SEARCH RESULTS for '{value}' in {column}{note}:\n" + "\n".join([f"- {r}" for r in results])
+    
+    return f"No matches found for '{value}' in {column}"
+
+
+def _build_query_plan_prompt(columns: List[str], row_count: int, user_message: str) -> str:
+    """Build the LLM prompt for query planning."""
+    return f"""Given this user question about a dataset, output a JSON query plan.
 
 Dataset columns: {', '.join(columns)}
 Dataset has {row_count} rows.
@@ -963,10 +1040,33 @@ Examples:
 - "give me any hard problem" -> {{"type": "random", "column": "Difficulty Level", "value": "Hard"}}
 - "breakdown by difficulty" -> {{"type": "group_count", "column": "Difficulty Level"}}"""
 
-    messages = [{"role": "user", "content": plan_prompt}]
+
+def _find_column_in_list(column: str, columns: List[str]) -> str:
+    """Find a column name in a list (case-insensitive)."""
+    for c in columns:
+        if c.lower() == column.lower():
+            return c
+    return column
+
+
+async def _interpret_and_execute_query(
+    df: Optional[pd.DataFrame],
+    user_message: str,
+    columns: List[str],
+    data_path: Optional[str] = None,
+) -> Optional[str]:
+    """Use LLM to interpret the query and execute it efficiently (handles large datasets)."""
+    from data_loader import is_large_dataset
+    
+    is_large = False
+    if data_path:
+        is_large, _ = is_large_dataset(Path(data_path))
+    
+    row_count = len(df) if df is not None else 0
+    plan_prompt = _build_query_plan_prompt(columns, row_count, user_message)
     
     try:
-        plan_response = await chat_completion(messages, temperature=0, max_tokens=200)
+        plan_response = await chat_completion([{"role": "user", "content": plan_prompt}], temperature=0, max_tokens=200)
         plan = _parse_json_response(plan_response)
         
         if not plan:
@@ -977,104 +1077,94 @@ Examples:
         value = plan.get("value")
         stat = plan.get("stat")
         
-        # Find the actual column name (case-insensitive)
         if column:
-            for c in columns:
-                if c.lower() == column.lower():
-                    column = c
-                    break
+            column = _find_column_in_list(column, columns)
         
-        # Execute the query - use chunked operations for large datasets
+        # Dispatch to appropriate handler
         if query_type == "count" and column and value:
-            if is_large and data_path:
-                count = count_rows_chunked(Path(data_path), column, value)
-            elif df is not None:
-                count = len(df[df[column].astype(str).str.lower() == str(value).lower()])
-            else:
-                return None
-            return f"COUNT: There are **{count}** rows where {column} = '{value}'"
-            
+            return _execute_count_query(df, column, value, is_large, data_path)
         elif query_type == "stat" and column:
-            if is_large and data_path:
-                result = calculate_stat_chunked(Path(data_path), column, stat or "mean")
-            elif df is not None:
-                if column in df.columns and pd.api.types.is_numeric_dtype(df[column]):
-                    if stat == "mean":
-                        result = df[column].mean()
-                    elif stat == "sum":
-                        result = df[column].sum()
-                    elif stat == "min":
-                        result = df[column].min()
-                    elif stat == "max":
-                        result = df[column].max()
-                    else:
-                        result = df[column].mean()
-                else:
-                    return f"ERROR: Column '{column}' is not numeric"
-            else:
-                return None
-            
-            if result is not None:
-                return f"STATISTIC: The {stat or 'mean'} of {column} is **{result:.2f}**"
-            else:
-                return f"ERROR: Could not calculate {stat} for {column}"
-                
+            return _execute_stat_query(df, column, stat, is_large, data_path)
         elif query_type == "group_count" and column:
-            if is_large and data_path:
-                counts = group_count_chunked(Path(data_path), column)
-            elif df is not None:
-                if column in df.columns:
-                    counts = df[column].value_counts().to_dict()
-                else:
-                    return None
-            else:
-                return None
-            
-            result_str = "\n".join([f"- {k}: {v}" for k, v in counts.items()])
-            return f"GROUP COUNT by {column}:\n{result_str}"
-                
+            return _execute_group_count_query(df, column, is_large, data_path)
         elif query_type == "random":
-            if is_large and data_path:
-                sample_df = get_random_sample_chunked(Path(data_path), column, value, n=1)
-                if len(sample_df) > 0:
-                    sample = sample_df.iloc[0]
-                else:
-                    return f"No rows found where {column} = '{value}'" if column and value else "No data available"
-            elif df is not None:
-                if column and value:
-                    filtered = df[df[column].astype(str).str.lower() == str(value).lower()]
-                    if len(filtered) > 0:
-                        sample = filtered.sample(n=1).iloc[0]
-                    else:
-                        return f"No rows found where {column} = '{value}'"
-                else:
-                    sample = df.sample(n=1).iloc[0]
-            else:
-                return None
-            
-            return f"RANDOM SAMPLE:\n{sample.to_dict()}"
-            
+            return _execute_random_query(df, column, value, is_large, data_path)
         elif query_type == "search" and column and value:
-            # For search, we need to load some data - use sampling for large files
-            search_df = df if df is not None else _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE, sample=True)
-            if search_df is not None and column in search_df.columns:
-                matches = search_df[search_df[column].astype(str).str.lower().str.contains(str(value).lower(), na=False)]
-                if len(matches) > 0:
-                    results = matches.head(5)[column].tolist()
-                    note = " (showing results from sample)" if is_large else ""
-                    return f"SEARCH RESULTS for '{value}' in {column}{note}:\n" + "\n".join([f"- {r}" for r in results])
-                else:
-                    return f"No matches found for '{value}' in {column}"
-            else:
-                return f"ERROR: Column '{column}' not found"
-                    
+            return _execute_search_query(df, column, value, is_large, data_path)
         elif query_type == "info":
             info_note = " (large dataset - using estimates)" if is_large else ""
             return f"DATASET INFO{info_note}: {row_count} rows, {len(columns)} columns\nColumns: {', '.join(columns)}"
+        
+        return None
             
     except Exception as e:
         print(f"[Chat] Query interpretation failed: {e}")
         return None
+
+
+async def _try_semantic_search(
+    session: Optional["AsyncSession"],
+    dataset_id: Optional[str],
+    user_message: str,
+) -> Optional[str]:
+    """Try semantic search and return formatted results."""
+    if not session or not dataset_id:
+        return None
+    
+    try:
+        from embeddings import semantic_search, has_embeddings
+        if not await has_embeddings(session, dataset_id):
+            return None
+        
+        print(f"[Chat] Using semantic search for: {user_message[:50]}...")
+        results = await semantic_search(session, dataset_id, user_message, limit=SEARCH_RESULT_LIMIT)
+        
+        if not results:
+            return None
+        
+        query_results = "SEMANTICALLY RELEVANT RESULTS:\n"
+        for i, r in enumerate(results, 1):
+            similarity = r["similarity"]
+            metadata = r.get("metadata", {})
+            title = metadata.get("Question Title", metadata.get("title", "Unknown"))
+            query_results += f"{i}. **{title}** (similarity: {similarity:.2f})\n"
+            query_results += f"   {r['content'][:300]}...\n\n"
+        return query_results
+    except Exception as e:
+        print(f"[Chat] Semantic search failed: {e}")
+        return None
+
+
+def _get_sample_data_results(df: Optional[pd.DataFrame], data_path: Optional[str]) -> str:
+    """Get sample data as a fallback query result."""
+    if df is not None and len(df) > 0:
+        sample_rows = df.head(3).to_dict(orient="records")
+        return "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
+    
+    if data_path:
+        sample_df = _load_dataframe(data_path, max_rows=3)
+        if sample_df is not None and len(sample_df) > 0:
+            sample_rows = sample_df.to_dict(orient="records")
+            return "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
+        return "DATASET INFO: Large dataset - queries will be processed efficiently using chunked operations."
+    
+    return "DATASET INFO: No data available."
+
+
+def _build_data_response_prompt(stats: Dict[str, Any], query_results: str) -> str:
+    """Build the system prompt for responding to data queries."""
+    return f"""You are the Dataset Curator assistant. Answer the user's question using ONLY the data provided below.
+
+Dataset info: {stats['rows']} rows, {stats['columns']} columns
+Columns: {', '.join(stats['column_names'])}
+
+QUERY RESULTS:
+{query_results}
+
+RULES:
+1. Use ONLY the data shown above
+2. Be direct and concise
+3. Format numbers nicely"""
 
 
 async def _chat_without_tools(
@@ -1088,67 +1178,22 @@ async def _chat_without_tools(
     """Fallback chat without function calling - uses LLM to interpret and execute queries."""
     columns = context.get("columns", []) if context else (list(df.columns) if df is not None else [])
     
-    # Get basic stats
     stats = {
         "rows": len(df) if df is not None else 0,
         "columns": len(df.columns) if df is not None else len(columns),
         "column_names": columns[:15],
     }
     
-    query_results = ""
+    # Try multiple query strategies in order
+    query_results = await _interpret_and_execute_query(df, user_message, columns, data_path)
     
-    # First, try to interpret and execute the query using LLM
-    executed_result = await _interpret_and_execute_query(df, user_message, columns, data_path)
-    if executed_result:
-        query_results = executed_result
-    
-    # If no direct execution, try semantic search
-    if not query_results and session and dataset_id:
-        try:
-            from embeddings import semantic_search, has_embeddings
-            if await has_embeddings(session, dataset_id):
-                print(f"[Chat] Using semantic search for: {user_message[:50]}...")
-                results = await semantic_search(session, dataset_id, user_message, limit=SEARCH_RESULT_LIMIT)
-                if results:
-                    query_results = "SEMANTICALLY RELEVANT RESULTS:\n"
-                    for i, r in enumerate(results, 1):
-                        similarity = r["similarity"]
-                        metadata = r.get("metadata", {})
-                        title = metadata.get("Question Title", metadata.get("title", "Unknown"))
-                        query_results += f"{i}. **{title}** (similarity: {similarity:.2f})\n"
-                        query_results += f"   {r['content'][:300]}...\n\n"
-        except Exception as e:
-            print(f"[Chat] Semantic search failed: {e}")
-    
-    # Default: show sample data
     if not query_results:
-        if df is not None and len(df) > 0:
-            sample_rows = df.head(3).to_dict(orient="records")
-            query_results = "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
-        elif data_path:
-            # Load a small sample for display
-            sample_df = _load_dataframe(data_path, max_rows=3)
-            if sample_df is not None and len(sample_df) > 0:
-                sample_rows = sample_df.to_dict(orient="records")
-                query_results = "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
-            else:
-                query_results = "DATASET INFO: Large dataset - queries will be processed efficiently using chunked operations."
-        else:
-            query_results = "DATASET INFO: No data available."
+        query_results = await _try_semantic_search(session, dataset_id, user_message)
     
-    system_prompt = f"""You are the Dataset Curator assistant. Answer the user's question using ONLY the data provided below.
-
-Dataset info: {stats['rows']} rows, {stats['columns']} columns
-Columns: {', '.join(stats['column_names'])}
-
-QUERY RESULTS:
-{query_results}
-
-RULES:
-1. Use ONLY the data shown above
-2. Be direct and concise
-3. Format numbers nicely"""
-
+    if not query_results:
+        query_results = _get_sample_data_results(df, data_path)
+    
+    system_prompt = _build_data_response_prompt(stats, query_results)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message}
@@ -1194,6 +1239,140 @@ Examples:
     return "data" if "data" in result else "general"
 
 
+def _prepare_chat_context(
+    data_path: Optional[str],
+    context: Optional[Dict[str, Any]],
+) -> tuple[Optional[pd.DataFrame], List[str], bool]:
+    """Prepare DataFrame and columns for chat, handling large datasets."""
+    from data_loader import is_large_dataset
+    
+    is_large = False
+    if data_path:
+        is_large, _ = is_large_dataset(Path(data_path))
+    
+    df = _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE if is_large else None, sample=is_large)
+    columns = context.get("columns", []) if context else []
+    if df is not None and not columns:
+        columns = list(df.columns)
+    
+    return df, columns, is_large
+
+
+async def _handle_general_conversation(
+    user_message: str,
+    history: Optional[List[Dict[str, str]]],
+) -> str:
+    """Handle general conversation (non-data queries)."""
+    general_prompt = """You are the Dataset Curator assistant, a friendly AI that helps users work with datasets.
+You're currently helping a user who has data loaded. Be conversational and helpful.
+If they ask what you can do, mention: searching data, getting statistics, finding specific records, filtering, etc."""
+    
+    messages: List[Message] = [{"role": "system", "content": general_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+    return await chat_completion(messages, temperature=0.7)
+
+
+async def _execute_tool_calls(
+    df: pd.DataFrame,
+    message: Any,
+    messages: List[Message],
+    client: AsyncOpenAI,
+) -> tuple[Any, List[Message]]:
+    """Execute tool calls and return updated message and messages list."""
+    iteration = 0
+    
+    while message.tool_calls and iteration < MAX_TOOL_ITERATIONS:
+        iteration += 1
+        messages.append(message)
+        
+        for tool_call in message.tool_calls:
+            function_name = tool_call.function.name
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+            
+            print(f"[Chat] Calling function: {function_name}({arguments})")
+            result = _execute_data_query(df, function_name, arguments)
+            print(f"[Chat] Result: {result}")
+            
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result)
+            })
+        
+        response = await client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=messages,
+            tools=CHAT_TOOLS,
+            tool_choice="auto",
+            temperature=0.7,
+            max_tokens=2048,
+            stream=False,
+        )
+        message = response.choices[0].message
+    
+    return message, messages
+
+
+async def _handle_data_query_with_tools(
+    df: pd.DataFrame,
+    user_message: str,
+    columns: List[str],
+    history: Optional[List[Dict[str, str]]],
+    context: Optional[Dict[str, Any]],
+    session: Optional["AsyncSession"],
+    dataset_id: Optional[str],
+    data_path: Optional[str],
+) -> str:
+    """Handle data queries using function calling."""
+    system_prompt = _build_chat_system_prompt(columns)
+    messages: List[Message] = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+    
+    try:
+        client = get_client()
+        response = await client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=messages,
+            tools=CHAT_TOOLS,
+            tool_choice="auto",
+            temperature=0.7,
+            max_tokens=2048,
+            stream=False,
+        )
+        
+        message = response.choices[0].message
+        print(f"[Chat] Initial response: content={repr(message.content)}, tool_calls={message.tool_calls}")
+        
+        if not message.content and not message.tool_calls:
+            print("[Chat] Empty response with no tools, retrying without function calling...")
+            return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
+        
+        message, messages = await _execute_tool_calls(df, message, messages, client)
+        
+        if message.content:
+            return message.content
+        
+        print(f"[Chat] No content after tool calls, falling back...")
+        return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
+            
+    except Exception as e:
+        error_str = str(e).lower()
+        print(f"[Chat] Error: {e}")
+        
+        if any(indicator in error_str for indicator in ["tool", "function", "no endpoints found"]):
+            print("[Chat] Tool calling not supported, falling back to non-tool chat...")
+            return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
+        
+        raise
+
+
 async def chat_with_agent(
     user_message: str,
     data_path: Optional[str] = None,
@@ -1203,119 +1382,23 @@ async def chat_with_agent(
     dataset_id: Optional[str] = None,
 ) -> str:
     """Chat with the dataset curator agent - answers questions about data using function calling."""
+    df, columns, _ = _prepare_chat_context(data_path, context)
     
-    # Load dataframe - use sampling for large datasets
-    from data_loader import is_large_dataset
-    is_large = False
-    if data_path:
-        path = Path(data_path)
-        is_large, _ = is_large_dataset(path)
-    
-    # For large datasets, only load a sample (chunked operations will handle full queries)
-    df = _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE if is_large else None, sample=is_large)
-    columns = context.get("columns", []) if context else []
-    if df is not None and not columns:
-        columns = list(df.columns)
-    
-    # Use LLM to determine if this is a data query or general conversation
     query_type = await _classify_query_type(user_message, columns)
     print(f"[Chat] Query: {user_message[:50]}... | Type: {query_type}")
     
-    # For general conversation, respond without function calling
     if query_type == "general":
-        general_prompt = """You are the Dataset Curator assistant, a friendly AI that helps users work with datasets.
-You're currently helping a user who has data loaded. Be conversational and helpful.
-If they ask what you can do, mention: searching data, getting statistics, finding specific records, filtering, etc."""
-        
-        messages: List[Message] = [{"role": "system", "content": general_prompt}]
-        if history:
-            messages.extend(history)  # Full chat history
-        messages.append({"role": "user", "content": user_message})
-        return await chat_completion(messages, temperature=0.7)
+        return await _handle_general_conversation(user_message, history)
     
-    # For data queries, use function calling
+    if df is not None:
+        return await _handle_data_query_with_tools(
+            df, user_message, columns, history, context, session, dataset_id, data_path
+        )
+    
+    # No data available, use regular chat
     system_prompt = _build_chat_system_prompt(columns)
     messages: List[Message] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
-    
-    if df is not None:
-        # Use function calling
-        try:
-            client = get_client()
-            response = await client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=messages,
-                tools=CHAT_TOOLS,
-                tool_choice="auto",
-                temperature=0.7,
-                max_tokens=2048,
-                stream=False,
-            )
-            
-            message = response.choices[0].message
-            print(f"[Chat] Initial response: content={repr(message.content)}, tool_calls={message.tool_calls}")
-            
-            # If LLM returned empty and no tool calls, retry without tools
-            if not message.content and not message.tool_calls:
-                print("[Chat] Empty response with no tools, retrying without function calling...")
-                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
-            
-            iteration = 0
-            
-            # Handle function calls
-            while message.tool_calls and iteration < MAX_TOOL_ITERATIONS:
-                iteration += 1
-                messages.append(message)
-                
-                # Execute function calls
-                for tool_call in message.tool_calls:
-                    function_name = tool_call.function.name
-                    try:
-                        arguments = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-                    
-                    print(f"[Chat] Calling function: {function_name}({arguments})")
-                    result = _execute_data_query(df, function_name, arguments)
-                    print(f"[Chat] Result: {result}")
-                    
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result)
-                    })
-                
-                # Get next response
-                response = await client.chat.completions.create(
-                    model=DEFAULT_MODEL,
-                    messages=messages,
-                    tools=CHAT_TOOLS,
-                    tool_choice="auto",
-                    temperature=0.7,
-                    max_tokens=2048,
-                    stream=False,
-                )
-                message = response.choices[0].message
-            
-            if message.content:
-                return message.content
-            else:
-                # If no content after function calls, fallback to non-tool response
-                print(f"[Chat] No content after tool calls, falling back...")
-                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
-                
-        except Exception as e:
-            error_str = str(e).lower()
-            print(f"[Chat] Error: {e}")
-            
-            # Check for tool/function calling errors - fall back to non-tool chat
-            if any(indicator in error_str for indicator in ["tool", "function", "no endpoints found"]):
-                print("[Chat] Tool calling not supported, falling back to non-tool chat...")
-                return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
-            
-            raise
-    else:
-        # No data available, use regular chat
-        return await chat_completion(messages, temperature=0.7)
+    return await chat_completion(messages, temperature=0.7)

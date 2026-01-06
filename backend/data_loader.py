@@ -168,6 +168,44 @@ def count_rows_chunked(
     return count
 
 
+def _iterate_column_chunks(file_path: Path, column: str):
+    """Iterate over column chunks, dropping nulls."""
+    for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
+        yield chunk.dropna(subset=[column])
+
+
+def _calculate_mean_chunked(file_path: Path, column: str) -> Optional[float]:
+    """Calculate mean using chunked reading."""
+    total_sum = 0.0
+    total_count = 0
+    for chunk in _iterate_column_chunks(file_path, column):
+        total_sum += chunk[column].sum()
+        total_count += len(chunk)
+    return total_sum / total_count if total_count > 0 else None
+
+
+def _calculate_sum_chunked(file_path: Path, column: str) -> float:
+    """Calculate sum using chunked reading."""
+    total_sum = 0.0
+    for chunk in _iterate_column_chunks(file_path, column):
+        total_sum += chunk[column].sum()
+    return total_sum
+
+
+def _calculate_extremum_chunked(file_path: Path, column: str, find_max: bool) -> Optional[float]:
+    """Calculate min or max using chunked reading."""
+    result = None
+    for chunk in _iterate_column_chunks(file_path, column):
+        chunk_val = chunk[column].max() if find_max else chunk[column].min()
+        if result is None:
+            result = chunk_val
+        elif find_max:
+            result = max(result, chunk_val)
+        else:
+            result = min(result, chunk_val)
+    return result
+
+
 def calculate_stat_chunked(
     file_path: Path,
     column: str,
@@ -190,53 +228,26 @@ def calculate_stat_chunked(
         return None
     
     try:
-        # Read first chunk to check column exists and type
+        # Validate column exists and is numeric
         first_chunk = pd.read_csv(file_path, nrows=1000)
         if column not in first_chunk.columns:
             return None
-        
         if not pd.api.types.is_numeric_dtype(first_chunk[column]):
             return None
         
-        # Calculate using chunks
-        if stat == "mean":
-            total_sum = 0.0
-            total_count = 0
-            for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
-                chunk = chunk.dropna(subset=[column])
-                total_sum += chunk[column].sum()
-                total_count += len(chunk)
-            return total_sum / total_count if total_count > 0 else None
+        # Dispatch to appropriate calculator
+        stat_calculators = {
+            "mean": lambda: _calculate_mean_chunked(file_path, column),
+            "sum": lambda: _calculate_sum_chunked(file_path, column),
+            "min": lambda: _calculate_extremum_chunked(file_path, column, find_max=False),
+            "max": lambda: _calculate_extremum_chunked(file_path, column, find_max=True),
+        }
         
-        elif stat == "sum":
-            total_sum = 0.0
-            for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
-                chunk = chunk.dropna(subset=[column])
-                total_sum += chunk[column].sum()
-            return total_sum
-        
-        elif stat == "min":
-            min_val = None
-            for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
-                chunk = chunk.dropna(subset=[column])
-                chunk_min = chunk[column].min()
-                if min_val is None or chunk_min < min_val:
-                    min_val = chunk_min
-            return min_val
-        
-        elif stat == "max":
-            max_val = None
-            for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
-                chunk = chunk.dropna(subset=[column])
-                chunk_max = chunk[column].max()
-                if max_val is None or chunk_max > max_val:
-                    max_val = chunk_max
-            return max_val
+        return stat_calculators[stat]()
             
     except Exception as e:
         print(f"[DataLoader] Error calculating {stat}: {e}")
-    
-    return None
+        return None
 
 
 def group_count_chunked(

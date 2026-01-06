@@ -343,103 +343,114 @@ class DataOperator:
             self.df[name] = None
             return f"Added empty column '{name}'."
 
+    def _resolve_condition_column(self, condition_col: str) -> Optional[str]:
+        """Resolve condition column name (case-insensitive)."""
+        if condition_col in self.df.columns:
+            return condition_col
+        matches = [c for c in self.df.columns if c.lower() == condition_col.lower()]
+        return matches[0] if matches else None
+
+    def _parse_conditions_param(self, conditions: Any) -> Optional[List[Dict]]:
+        """Parse conditions parameter (handles string JSON)."""
+        if isinstance(conditions, str):
+            try:
+                import json
+                return json.loads(conditions)
+            except:
+                return None
+        return conditions if isinstance(conditions, list) else None
+
+    def _build_condition_mask(self, condition_col: str, cond: Dict) -> Optional[Any]:
+        """Build a condition mask for a single condition."""
+        op = cond.get("operator", ">")
+        val = cond.get("value")
+        
+        operator_map = {
+            "<": lambda: self.df[condition_col] < val,
+            "<=": lambda: self.df[condition_col] <= val,
+            ">": lambda: self.df[condition_col] > val,
+            ">=": lambda: self.df[condition_col] >= val,
+            "==": lambda: self.df[condition_col] == val,
+            "!=": lambda: self.df[condition_col] != val,
+        }
+        
+        if op in operator_map:
+            return operator_map[op]()
+        
+        if op in ("between", "range"):
+            val1 = cond.get("value1") or cond.get("min")
+            val2 = cond.get("value2") or cond.get("max")
+            if val1 is not None and val2 is not None:
+                return (self.df[condition_col] >= val1) & (self.df[condition_col] <= val2)
+        
+        return None
+
+    def _apply_multi_conditions(self, name: str, condition_col: str, conditions: List[Dict], default_value: Any) -> str:
+        """Apply multiple conditions using np.select."""
+        cond_list = []
+        choice_list = []
+        
+        for cond in conditions:
+            mask = self._build_condition_mask(condition_col, cond)
+            if mask is not None:
+                cond_list.append(mask)
+                choice_list.append(cond.get("result"))
+        
+        if not cond_list:
+            return "Error: No valid conditions provided."
+        
+        self.df[name] = np.select(cond_list, choice_list, default=default_value)
+        return f"Added column '{name}' with {len(conditions)} conditional ranges."
+
+    def _apply_single_condition(self, name: str, condition_col: str, operator: str, threshold: Any, true_value: Any, false_value: Any) -> str:
+        """Apply a single condition to create a boolean column."""
+        operator_map = {
+            ">": lambda: self.df[condition_col] > threshold,
+            "<": lambda: self.df[condition_col] < threshold,
+            ">=": lambda: self.df[condition_col] >= threshold,
+            "<=": lambda: self.df[condition_col] <= threshold,
+            "==": lambda: self.df[condition_col] == threshold,
+            "!=": lambda: self.df[condition_col] != threshold,
+            "contains": lambda: self.df[condition_col].astype(str).str.contains(str(threshold), case=False, na=False),
+        }
+        
+        if operator in operator_map:
+            self.df[name] = operator_map[operator]()
+        else:
+            self.df[name] = False
+        
+        # Apply custom true/false values if not boolean
+        if true_value is not True or false_value is not False:
+            self.df[name] = self.df[name].map({True: true_value, False: false_value})
+        
+        return f"Added column '{name}' based on condition: {condition_col} {operator} {threshold}."
+
     def _add_conditional_column(self, params: Dict) -> str:
         name = params.get("name")
         condition_col = params.get("condition_column")
-        operator = params.get("operator", ">")
-        threshold = params.get("threshold")
-        true_value = params.get("true_value", True)
-        false_value = params.get("false_value", False)
-        conditions = params.get("conditions")  # List of conditions for ranges
         
         if not name or not condition_col:
             return "Column name and condition column are required."
         
-        if condition_col not in self.df.columns:
-            # Try case-insensitive match
-            matches = [c for c in self.df.columns if c.lower() == condition_col.lower()]
-            if matches:
-                condition_col = matches[0]
-            else:
-                return f"Column '{condition_col}' not found."
+        resolved_col = self._resolve_condition_column(condition_col)
+        if not resolved_col:
+            return f"Column '{condition_col}' not found."
+        condition_col = resolved_col
         
         try:
-            # Support multiple conditions/ranges
-            # Handle cases where conditions might be a string representation
-            if isinstance(conditions, str):
-                try:
-                    import json
-                    conditions = json.loads(conditions)
-                except:
-                    pass
+            conditions = self._parse_conditions_param(params.get("conditions"))
             
-            if conditions and isinstance(conditions, list):
-                # Multiple conditions/ranges (e.g., < 30, 30-60, > 60)
-                # Build conditions and choices for np.select
-                cond_list = []
-                choice_list = []
-                
-                for cond in conditions:
-                    op = cond.get("operator", ">")
-                    val = cond.get("value")
-                    result_val = cond.get("result")
-                    
-                    if op == "<":
-                        cond_list.append(self.df[condition_col] < val)
-                    elif op == "<=":
-                        cond_list.append(self.df[condition_col] <= val)
-                    elif op == ">":
-                        cond_list.append(self.df[condition_col] > val)
-                    elif op == ">=":
-                        cond_list.append(self.df[condition_col] >= val)
-                    elif op == "==":
-                        cond_list.append(self.df[condition_col] == val)
-                    elif op == "!=":
-                        cond_list.append(self.df[condition_col] != val)
-                    elif op == "between" or op == "range":
-
-                        val1 = cond.get("value1") or cond.get("min")
-                        val2 = cond.get("value2") or cond.get("max")
-                        if val1 is not None and val2 is not None:
-                            cond_list.append((self.df[condition_col] >= val1) & (self.df[condition_col] <= val2))
-                        else:
-                            continue
-                    else:
-                        continue
-                    
-                    choice_list.append(result_val)
-                
-                if cond_list and choice_list:
-                    # Use np.select to apply conditions
-                    # Order matters: more specific conditions should come first
-                    # For ranges like <30, 30-60, >60, process in order: <30, then 30-60, then >60
-                    default_val = params.get("default_value", "Unknown")
-                    self.df[name] = np.select(cond_list, choice_list, default=default_val)
-                    return f"Added column '{name}' with {len(conditions)} conditional ranges."
-                else:
-                    return "Error: No valid conditions provided."
+            if conditions:
+                default_value = params.get("default_value", "Unknown")
+                return self._apply_multi_conditions(name, condition_col, conditions, default_value)
             
-            # Single condition (backward compatibility)
-            if operator == ">":
-                self.df[name] = self.df[condition_col] > threshold
-            elif operator == "<":
-                self.df[name] = self.df[condition_col] < threshold
-            elif operator == ">=":
-                self.df[name] = self.df[condition_col] >= threshold
-            elif operator == "<=":
-                self.df[name] = self.df[condition_col] <= threshold
-            elif operator == "==":
-                self.df[name] = self.df[condition_col] == threshold
-            elif operator == "!=":
-                self.df[name] = self.df[condition_col] != threshold
-            elif operator == "contains":
-                self.df[name] = self.df[condition_col].astype(str).str.contains(str(threshold), case=False, na=False)
+            # Single condition
+            operator = params.get("operator", ">")
+            threshold = params.get("threshold")
+            true_value = params.get("true_value", True)
+            false_value = params.get("false_value", False)
             
-            # Apply custom true/false values if not boolean
-            if true_value is not True or false_value is not False:
-                self.df[name] = self.df[name].map({True: true_value, False: false_value})
-            
-            return f"Added column '{name}' based on condition: {condition_col} {operator} {threshold}."
+            return self._apply_single_condition(name, condition_col, operator, threshold, true_value, false_value)
         except Exception as e:
             return f"Error: Error creating conditional column: {str(e)}"
 
