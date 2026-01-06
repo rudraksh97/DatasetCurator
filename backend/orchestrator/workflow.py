@@ -5,10 +5,14 @@ This module provides:
 2. Multi-step transformations with LangGraph
 3. State management and persistence
 4. Conditional branching, retries, and validation
+
+Refactored to use:
+- Repository pattern for data access
+- Centralized configuration
+- Separated node implementations
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,22 +23,15 @@ from langgraph.graph import StateGraph, END
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents.data_ops import DataOperator
-from llm import create_execution_plan
+from config import settings
 from models.dataset_state import DatasetState
-from models.db_models import DatasetRecord
+from repositories.dataset import DatasetRepository
+from services.llm.planner import create_execution_plan
 
 
-# ============================================================================
-# Storage Configuration
-# ============================================================================
-
-# Storage paths (configurable via environment variables)
-RAW_STORAGE = Path(os.getenv("RAW_STORAGE_PATH", "storage/raw"))
-CURATED_STORAGE = Path(os.getenv("CURATED_STORAGE_PATH", "storage/curated"))
-
-# Ensure directories exist
-RAW_STORAGE.mkdir(parents=True, exist_ok=True)
-CURATED_STORAGE.mkdir(parents=True, exist_ok=True)
+# Re-export storage paths for backward compatibility
+RAW_STORAGE = settings.storage.raw_path
+CURATED_STORAGE = settings.storage.curated_path
 
 
 # ============================================================================
@@ -42,6 +39,7 @@ CURATED_STORAGE.mkdir(parents=True, exist_ok=True)
 # ============================================================================
 
 class StepStatus(str, Enum):
+    """Status of a transformation step."""
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
@@ -52,7 +50,18 @@ class StepStatus(str, Enum):
 
 @dataclass
 class StepResult:
-    """Result of executing a single step."""
+    """Result of executing a single step.
+    
+    Attributes:
+        step_num: Step number in the plan.
+        description: Human-readable description.
+        operation: Operation name executed.
+        status: Execution status.
+        message: Result or error message.
+        rows_before: Row count before operation.
+        rows_after: Row count after operation.
+        retry_count: Number of retries attempted.
+    """
     step_num: int
     description: str
     operation: str
@@ -94,30 +103,38 @@ class TransformationState(TypedDict):
 
 
 # ============================================================================
-# Database State Management
+# Database State Management (using Repository)
 # ============================================================================
 
 async def get_dataset_state(session: AsyncSession, dataset_id: str) -> DatasetState:
-    """Get dataset state from database."""
-    record = await session.get(DatasetRecord, dataset_id)
-    if not record:
-        raise ValueError(f"Dataset {dataset_id} not found")
-    return DatasetState.from_record(record)
+    """Get dataset state from database.
+    
+    Args:
+        session: Database session.
+        dataset_id: Dataset identifier.
+    
+    Returns:
+        DatasetState instance.
+    
+    Raises:
+        ValueError: If dataset not found.
+    """
+    repo = DatasetRepository(session)
+    return await repo.get(dataset_id)
 
 
 async def upsert_dataset_state(session: AsyncSession, state: DatasetState) -> DatasetState:
-    """Create or update dataset state in database."""
-    payload = state.to_record_payload()
-    record = await session.get(DatasetRecord, state.dataset_id)
-    if record:
-        for key, value in payload.items():
-            setattr(record, key, value)
-    else:
-        record = DatasetRecord(**payload)
-        session.add(record)
-    await session.commit()
-    await session.refresh(record)
-    return DatasetState.from_record(record)
+    """Create or update dataset state in database.
+    
+    Args:
+        session: Database session.
+        state: State to save.
+    
+    Returns:
+        Saved state.
+    """
+    repo = DatasetRepository(session)
+    return await repo.save(state)
 
 
 # ============================================================================
@@ -129,21 +146,30 @@ async def process_upload(
     dataset_id: str,
     source_path: Path,
 ) -> DatasetState:
-    """Process an uploaded dataset: analyze schema and create curated copy."""
+    """Process an uploaded dataset: analyze schema and create curated copy.
     
-    # 1. Create initial state
+    Args:
+        session: Database session.
+        dataset_id: Unique dataset identifier.
+        source_path: Path to uploaded file.
+    
+    Returns:
+        Created DatasetState.
+    
+    Raises:
+        ValueError: If processing fails.
+    """
     state = DatasetState(dataset_id=dataset_id, raw_path=str(source_path))
     
-    # 2. Read and analyze the data
+    # Analyze schema
     try:
         df = pd.read_csv(source_path, nrows=2000)
         state.schema = {col: str(dtype) for col, dtype in df.dtypes.items()}
     except Exception as e:
-        # Log the error but continue - schema analysis is non-critical
         print(f"[Upload] Warning: Could not analyze schema for {dataset_id}: {e}")
         state.schema = None
 
-    # 3. Create curated copy
+    # Create curated copy
     curated_path = CURATED_STORAGE / f"{dataset_id}_v1.csv"
     try:
         df_full = pd.read_csv(source_path)
@@ -152,13 +178,10 @@ async def process_upload(
         state.current_version = 1
     except Exception as e:
         print(f"[Upload] Error: Could not create curated copy for {dataset_id}: {e}")
-        state.curated_path = None
-        # Re-raise since this is a critical failure
         raise ValueError(f"Failed to process dataset: {e}") from e
 
-    # 4. Save to database
-    state = await upsert_dataset_state(session, state)
-    return state
+    repo = DatasetRepository(session)
+    return await repo.save(state)
 
 
 # ============================================================================
@@ -171,7 +194,6 @@ async def plan_node(state: TransformationState) -> TransformationState:
     steps = plan.get("steps", [])
     plan_error = plan.get("error", "")
     
-    # Determine error message
     if plan_error:
         error_message = f"Planning failed: {plan_error}"
     elif not steps:
@@ -192,53 +214,31 @@ def load_data_node(state: TransformationState) -> TransformationState:
     """Load DataFrame from path."""
     try:
         df = pd.read_csv(state["data_path"])
-        return {
-            **state,
-            "df": df,
-            "error_message": "",
-        }
+        return {**state, "df": df, "error_message": ""}
     except Exception as e:
-        return {
-            **state,
-            "df": None,
-            "error_message": f"Failed to load data: {str(e)}",
-        }
+        return {**state, "df": None, "error_message": f"Failed to load data: {str(e)}"}
 
 
 def check_approval_node(state: TransformationState) -> TransformationState:
-    """Check if current step needs human approval (destructive operations).
-    
-    Note: Approval flow is currently disabled for automatic execution.
-    To enable, set REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS=true in environment.
-    """
+    """Check if current step needs human approval (destructive operations)."""
     if state["current_step_idx"] >= len(state["steps"]):
         return state
     
-    # Approval is disabled by default for seamless UX
-    # Enable via environment variable if needed for production safety
-    require_approval = os.getenv("REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS", "false").lower() == "true"
-    
-    if not require_approval:
+    if not settings.workflow.require_approval:
         return {**state, "needs_approval": False}
     
     step = state["steps"][state["current_step_idx"]]
     operation = step.get("operation", "")
     
-    # Destructive operations that might need approval
     destructive_ops = ["drop_column", "drop_rows", "drop_nulls", "drop_duplicates"]
     
     needs_approval = False
     if operation in destructive_ops:
         df = state["df"]
-        # Require approval for large datasets with destructive operations
-        approval_threshold = int(os.getenv("APPROVAL_ROW_THRESHOLD", "1000"))
-        if df is not None and len(df) > approval_threshold:
+        if df is not None and len(df) > settings.workflow.approval_row_threshold:
             needs_approval = True
     
-    return {
-        **state,
-        "needs_approval": needs_approval,
-    }
+    return {**state, "needs_approval": needs_approval}
 
 
 def _create_step_result(
@@ -264,19 +264,11 @@ def _create_step_result(
     )
 
 
-def _get_retry_count_for_step(results: List[StepResult], step_num: int) -> tuple[int, List[StepResult]]:
-    """Get retry count for a step and remove previous result if exists."""
-    retry_count = 0
-    updated_results = list(results)
-    for r in updated_results:
-        if r.step_num == step_num:
-            retry_count = r.retry_count + 1
-            updated_results.remove(r)
-            break
-    return retry_count, updated_results
-
-
-def _execute_operation(df: pd.DataFrame, operation: str, params: Dict) -> tuple[bool, str, Optional[pd.DataFrame]]:
+def _execute_operation(
+    df: pd.DataFrame, 
+    operation: str, 
+    params: Dict[str, Any],
+) -> tuple[bool, str, Optional[pd.DataFrame]]:
     """Execute a data operation and return (success, message, result_df)."""
     operator = DataOperator(df)
     success, msg = operator.execute(operation, params)
@@ -298,12 +290,10 @@ def execute_step_node(state: TransformationState) -> TransformationState:
     df = state["df"]
     results = list(state["results"])
     
-    # Handle missing data
     if df is None:
         result = _create_step_result(step_num, description, operation or "unknown", StepStatus.FAILED, "No data loaded")
         return {**state, "results": results + [result], "error_message": "No data loaded"}
     
-    # Handle missing operation
     if not operation:
         result = _create_step_result(step_num, description, "unknown", StepStatus.SKIPPED, "No operation specified")
         return {**state, "results": results + [result], "current_step_idx": idx + 1}
@@ -327,12 +317,19 @@ def execute_step_node(state: TransformationState) -> TransformationState:
             }
         
         # Operation failed - track retry count
-        retry_count, results = _get_retry_count_for_step(results, step_num)
+        retry_count = 0
+        updated_results = list(results)
+        for r in updated_results:
+            if r.step_num == step_num:
+                retry_count = r.retry_count + 1
+                updated_results.remove(r)
+                break
+        
         result = _create_step_result(
             step_num, description, operation, StepStatus.FAILED, msg,
             rows_before=rows_before, retry_count=retry_count
         )
-        return {**state, "results": results + [result], "error_message": msg}
+        return {**state, "results": updated_results + [result], "error_message": msg}
         
     except Exception as e:
         result = _create_step_result(
@@ -353,13 +350,11 @@ def validate_step_node(state: TransformationState) -> TransformationState:
         df = state["df"]
         
         if df is not None:
-            # Warn if >90% of rows removed
             if last_result.rows_before > 0:
                 removal_rate = 1 - (last_result.rows_after / last_result.rows_before)
                 if removal_rate > 0.9:
                     last_result.message += f" ⚠️ Warning: Removed {removal_rate*100:.1f}% of rows"
             
-            # Warn if dataset is now empty
             if len(df) == 0:
                 last_result.message += " ⚠️ Warning: Dataset is now empty"
     
@@ -371,7 +366,6 @@ def finalize_node(state: TransformationState) -> TransformationState:
     results = state["results"]
     df = state["df"]
     
-    # Check for planning errors (no steps generated)
     if not state["steps"] and state["error_message"]:
         return {
             **state,
@@ -383,7 +377,6 @@ def finalize_node(state: TransformationState) -> TransformationState:
     failed = sum(1 for r in results if r.status == StepStatus.FAILED)
     total = len(state["steps"])
     
-    # Build summary
     parts = [f"**Executed {total} step{'s' if total != 1 else ''}:**\n"]
     
     for result in results:
@@ -434,7 +427,6 @@ def should_retry_or_continue(state: TransformationState) -> Literal["retry", "co
     elif last_result.status == StepStatus.FAILED:
         if last_result.retry_count < state["max_retries"]:
             return "retry"
-        # Max retries reached - skip to next step
         state["current_step_idx"] = state.get("current_step_idx", 0) + 1
         if state["current_step_idx"] >= len(state["steps"]):
             return "finalize"
@@ -455,11 +447,13 @@ def needs_approval_check(state: TransformationState) -> Literal["wait_approval",
 # ============================================================================
 
 def create_transformation_graph() -> StateGraph:
-    """Create the LangGraph workflow for dataset transformations."""
+    """Create the LangGraph workflow for dataset transformations.
     
+    Returns:
+        Compiled StateGraph ready for execution.
+    """
     graph = StateGraph(TransformationState)
     
-    # Add nodes
     graph.add_node("plan", plan_node)
     graph.add_node("load_data", load_data_node)
     graph.add_node("check_approval", check_approval_node)
@@ -467,36 +461,24 @@ def create_transformation_graph() -> StateGraph:
     graph.add_node("validate", validate_step_node)
     graph.add_node("finalize", finalize_node)
     
-    # Define edges
     graph.set_entry_point("plan")
     graph.add_edge("plan", "load_data")
     graph.add_edge("load_data", "check_approval")
     
-    # Conditional: approval needed?
     graph.add_conditional_edges(
         "check_approval",
         needs_approval_check,
-        {
-            "execute": "execute_step",
-            "wait_approval": "finalize",
-        }
+        {"execute": "execute_step", "wait_approval": "finalize"}
     )
     
-    # After execution, validate
     graph.add_edge("execute_step", "validate")
     
-    # After validation, decide: retry, continue, or finish
     graph.add_conditional_edges(
         "validate",
         should_retry_or_continue,
-        {
-            "retry": "execute_step",
-            "continue": "check_approval",
-            "finalize": "finalize",
-        }
+        {"retry": "execute_step", "continue": "check_approval", "finalize": "finalize"}
     )
     
-    # End after finalize
     graph.add_edge("finalize", END)
     
     return graph.compile()
@@ -512,8 +494,17 @@ async def execute_transformation(
     columns: List[str],
     max_retries: int = 1,
 ) -> tuple[bool, str, Optional[pd.DataFrame]]:
-    """Execute transformation workflow and return result."""
+    """Execute transformation workflow and return result.
     
+    Args:
+        user_message: User's transformation request.
+        data_path: Path to data file.
+        columns: Available column names.
+        max_retries: Maximum retry attempts per step.
+    
+    Returns:
+        Tuple of (success, final_message, result_dataframe).
+    """
     graph = create_transformation_graph()
     
     initial_state: TransformationState = {
@@ -539,5 +530,3 @@ async def execute_transformation(
         final_state["final_message"],
         final_state["df"],
     )
-
-

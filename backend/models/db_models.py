@@ -4,20 +4,15 @@ This module defines the database schema for:
 - DatasetRecord: Stores dataset metadata and state
 - DatasetEmbedding: Stores vector embeddings for semantic search
 
-Note: EMBEDDING_DIM must match the dimension of the embedding model used.
-Configure via EMBEDDING_DIM environment variable (default: 384 for all-MiniLM-L6-v2).
+Note: EMBEDDING_DIM is loaded from the centralized config module.
 """
 from __future__ import annotations
-
-import os
 
 from sqlalchemy import Column, DateTime, Integer, String, JSON, Text, func
 from pgvector.sqlalchemy import Vector
 
+from config import settings
 from db import Base
-
-# Must match EMBEDDING_DIM in embeddings.py
-_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
 
 class DatasetRecord(Base):
@@ -62,7 +57,7 @@ class DatasetEmbedding(Base):
         dataset_id: Foreign reference to the dataset.
         row_index: Original row index in the CSV file.
         content: The text that was embedded.
-        embedding: 384-dimensional vector from sentence-transformers.
+        embedding: Vector from sentence-transformers (dimension from config).
         metadata_: Additional row data stored as JSON.
         created_at: Timestamp when the embedding was created.
     """
@@ -73,6 +68,6 @@ class DatasetEmbedding(Base):
     dataset_id = Column(String, index=True, nullable=False)
     row_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(_EMBEDDING_DIM), nullable=False)
+    embedding = Column(Vector(settings.embedding.dimension), nullable=False)
     metadata_ = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

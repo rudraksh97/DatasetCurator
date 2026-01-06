@@ -6,11 +6,15 @@ This module provides fixtures for:
 - Async session management
 """
 import asyncio
+import os
 from typing import AsyncIterator
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+# Set test database URL before importing db module
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import db
 from main import app
@@ -40,8 +44,8 @@ def setup_test_db(test_db_url, event_loop):
     session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
     # Patch globals for the app
-    db.engine = engine
-    db.AsyncSessionLocal = session_maker
+    db._engine = engine
+    db._session_maker = session_maker
 
     async def init_models():
         async with engine.begin() as conn:
@@ -61,7 +65,7 @@ def setup_test_db(test_db_url, event_loop):
 @pytest.fixture()
 async def session() -> AsyncIterator[AsyncSession]:
     """Provide an async database session for tests."""
-    async with db.AsyncSessionLocal() as session:
+    async with db._get_session_maker()() as session:
         yield session
 
 

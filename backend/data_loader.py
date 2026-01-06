@@ -8,11 +8,7 @@ using chunked reading and streaming. It supports:
 - Streaming statistics calculation
 - Reservoir sampling for random row selection
 
-Configurable thresholds (via environment variables):
-- LARGE_FILE_SIZE_MB: Files larger than this are considered large (default: 100MB)
-- LARGE_ROW_COUNT: Datasets with more rows are considered large (default: 1M)
-- SAMPLE_SIZE: Default sample size for exploratory queries (default: 10,000)
-- CHUNK_SIZE: Processing chunk size (default: 50,000)
+Configuration is loaded from the centralized config module.
 """
 from __future__ import annotations
 
@@ -22,11 +18,7 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-# Thresholds for large dataset handling (configurable via environment)
-LARGE_FILE_SIZE_MB = int(os.getenv("LARGE_FILE_SIZE_MB", "100"))
-LARGE_ROW_COUNT = int(os.getenv("LARGE_ROW_COUNT", "1000000"))
-SAMPLE_SIZE = int(os.getenv("DATA_SAMPLE_SIZE", "10000"))
-CHUNK_SIZE = int(os.getenv("DATA_CHUNK_SIZE", "50000"))
+from config import settings
 
 
 def get_file_size_mb(file_path: Path) -> float:
@@ -54,12 +46,10 @@ def estimate_row_count(file_path: Path) -> int:
         Estimated number of rows.
     """
     try:
-        # Read first chunk to estimate
         chunk = pd.read_csv(file_path, nrows=1000)
         if len(chunk) == 0:
             return 0
         
-        # Estimate based on file size
         file_size = os.path.getsize(file_path)
         avg_row_size = len(chunk.to_csv(index=False)) / len(chunk)
         estimated = int(file_size / avg_row_size)
@@ -72,8 +62,8 @@ def is_large_dataset(file_path: Path) -> Tuple[bool, Optional[int]]:
     """Check if dataset is large and return estimated row count.
     
     A dataset is considered large if:
-    - File size exceeds LARGE_FILE_SIZE_MB (100MB), OR
-    - Estimated rows exceed LARGE_ROW_COUNT (1M)
+    - File size exceeds configured threshold, OR
+    - Estimated rows exceed configured threshold
     
     Args:
         file_path: Path to CSV file.
@@ -87,7 +77,10 @@ def is_large_dataset(file_path: Path) -> Tuple[bool, Optional[int]]:
     size_mb = get_file_size_mb(file_path)
     estimated_rows = estimate_row_count(file_path)
     
-    is_large = size_mb > LARGE_FILE_SIZE_MB or estimated_rows > LARGE_ROW_COUNT
+    is_large = (
+        size_mb > settings.data_loader.large_file_size_mb or 
+        estimated_rows > settings.data_loader.large_row_count
+    )
     return is_large, estimated_rows
 
 
@@ -99,9 +92,9 @@ def load_dataframe_smart(
     """Load DataFrame with smart handling for large files.
     
     For large files:
-    - If sample=True: Returns a random sample of SAMPLE_SIZE rows
+    - If sample=True: Returns a random sample
     - If max_rows specified: Returns first max_rows rows
-    - Otherwise: Returns first SAMPLE_SIZE rows
+    - Otherwise: Returns first sample_size rows
     
     Args:
         file_path: Path to CSV file.
@@ -115,26 +108,23 @@ def load_dataframe_smart(
         return pd.DataFrame()
     
     is_large, estimated_rows = is_large_dataset(file_path)
+    sample_size = settings.data_loader.sample_size
     
-    # For large files, use sampling or limited rows
     if is_large:
         if sample:
-            # Load random sample
             total_rows = estimated_rows or 1_000_000
-            sample_size = min(SAMPLE_SIZE, total_rows)
+            actual_sample_size = min(sample_size, total_rows)
             skip = sorted(
                 pd.Series(range(total_rows))
-                .sample(n=total_rows - sample_size, random_state=42)
+                .sample(n=total_rows - actual_sample_size, random_state=42)
                 .tolist()
             )
-            return pd.read_csv(file_path, skiprows=skip, nrows=sample_size)
+            return pd.read_csv(file_path, skiprows=skip, nrows=actual_sample_size)
         elif max_rows:
             return pd.read_csv(file_path, nrows=max_rows)
         else:
-            # Default: load sample for large files
-            return pd.read_csv(file_path, nrows=SAMPLE_SIZE)
+            return pd.read_csv(file_path, nrows=sample_size)
     
-    # For small files, load normally
     if max_rows:
         return pd.read_csv(file_path, nrows=max_rows)
     return pd.read_csv(file_path)
@@ -143,7 +133,7 @@ def load_dataframe_smart(
 def count_rows_chunked(
     file_path: Path, 
     filter_column: Optional[str] = None, 
-    filter_value: Optional[str] = None
+    filter_value: Optional[str] = None,
 ) -> int:
     """Count rows efficiently using chunked reading.
     
@@ -156,10 +146,11 @@ def count_rows_chunked(
         Total count of matching rows.
     """
     count = 0
+    chunk_size = settings.data_loader.chunk_size
+    
     try:
-        for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE):
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size):
             if filter_column and filter_value:
-                # Filter chunk
                 if filter_column in chunk.columns:
                     chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
             count += len(chunk)
@@ -170,7 +161,8 @@ def count_rows_chunked(
 
 def _iterate_column_chunks(file_path: Path, column: str):
     """Iterate over column chunks, dropping nulls."""
-    for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
+    chunk_size = settings.data_loader.chunk_size
+    for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=[column]):
         yield chunk.dropna(subset=[column])
 
 
@@ -228,14 +220,12 @@ def calculate_stat_chunked(
         return None
     
     try:
-        # Validate column exists and is numeric
         first_chunk = pd.read_csv(file_path, nrows=1000)
         if column not in first_chunk.columns:
             return None
         if not pd.api.types.is_numeric_dtype(first_chunk[column]):
             return None
         
-        # Dispatch to appropriate calculator
         stat_calculators = {
             "mean": lambda: _calculate_mean_chunked(file_path, column),
             "sum": lambda: _calculate_sum_chunked(file_path, column),
@@ -250,10 +240,7 @@ def calculate_stat_chunked(
         return None
 
 
-def group_count_chunked(
-    file_path: Path,
-    column: str,
-) -> dict:
+def group_count_chunked(file_path: Path, column: str) -> dict:
     """Count groups efficiently using chunked reading.
     
     Args:
@@ -264,8 +251,10 @@ def group_count_chunked(
         Dictionary mapping {value: count}.
     """
     counts: dict = {}
+    chunk_size = settings.data_loader.chunk_size
+    
     try:
-        for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE, usecols=[column]):
+        for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=[column]):
             if column in chunk.columns:
                 chunk_counts = chunk[column].value_counts().to_dict()
                 for key, val in chunk_counts.items():
@@ -297,11 +286,12 @@ def get_random_sample_chunked(
         DataFrame with n random rows.
     """
     import random
+    
     samples = []
     seen = 0
+    chunk_size = settings.data_loader.chunk_size
     
-    for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE):
-        # Apply filter if needed
+    for chunk in pd.read_csv(file_path, chunksize=chunk_size):
         if filter_column and filter_value:
             if filter_column in chunk.columns:
                 chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
@@ -309,13 +299,11 @@ def get_random_sample_chunked(
         if len(chunk) == 0:
             continue
         
-        # Reservoir sampling: randomly replace samples as we see more data
         for _, row in chunk.iterrows():
             seen += 1
             if len(samples) < n:
                 samples.append(row)
             else:
-                # Randomly replace with probability n/seen
                 j = random.randint(0, seen - 1)
                 if j < n:
                     samples[j] = row

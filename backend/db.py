@@ -9,21 +9,14 @@ Example:
 """
 from __future__ import annotations
 
-import os
-from typing import AsyncIterator
+from functools import lru_cache
+from typing import AsyncIterator, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise ValueError(
-        "DATABASE_URL environment variable is required. "
-        "Example: postgresql+asyncpg://user:password@localhost:5432/dbname"
-    )
+from config import settings
 
 
 class Base(DeclarativeBase):
@@ -31,17 +24,72 @@ class Base(DeclarativeBase):
     pass
 
 
+@lru_cache(maxsize=1)
 def get_engine() -> AsyncEngine:
     """Create and return an async SQLAlchemy engine.
     
     Returns:
         AsyncEngine configured for PostgreSQL with asyncpg driver.
+    
+    Raises:
+        ValueError: If DATABASE_URL is not configured.
     """
-    return create_async_engine(DATABASE_URL, echo=False, future=True)
+    settings.database.validate()
+    return create_async_engine(settings.database.url, echo=False, future=True)
 
 
-engine = get_engine()
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+# Lazy initialization - only create when first accessed
+_engine: Optional[AsyncEngine] = None
+_session_maker: Optional[async_sessionmaker] = None
+
+
+def _get_engine() -> AsyncEngine:
+    """Get or create the database engine (lazy initialization)."""
+    global _engine
+    if _engine is None:
+        _engine = get_engine()
+    return _engine
+
+
+def _get_session_maker() -> async_sessionmaker:
+    """Get or create the session maker (lazy initialization)."""
+    global _session_maker
+    if _session_maker is None:
+        _session_maker = async_sessionmaker(_get_engine(), expire_on_commit=False)
+    return _session_maker
+
+
+# For backward compatibility, expose as properties
+@property
+def engine() -> AsyncEngine:
+    """Get the database engine."""
+    return _get_engine()
+
+
+# Create a proxy object for backward compatibility
+class _EngineProxy:
+    """Proxy that lazily accesses the engine."""
+    
+    def begin(self):
+        return _get_engine().begin()
+    
+    def __getattr__(self, name):
+        return getattr(_get_engine(), name)
+
+
+class _SessionMakerProxy:
+    """Proxy that lazily accesses the session maker."""
+    
+    def __call__(self):
+        return _get_session_maker()()
+    
+    def __getattr__(self, name):
+        return getattr(_get_session_maker(), name)
+
+
+# Backward compatible module-level variables
+engine = _EngineProxy()
+AsyncSessionLocal = _SessionMakerProxy()
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -50,7 +98,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     Yields:
         AsyncSession for database operations.
     """
-    async with AsyncSessionLocal() as session:
+    async with _get_session_maker()() as session:
         yield session
 
 
@@ -60,6 +108,6 @@ async def init_pgvector() -> None:
     This enables vector similarity search capabilities used for
     semantic search over dataset embeddings.
     """
-    async with engine.begin() as conn:
+    async with _get_engine().begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.commit()
