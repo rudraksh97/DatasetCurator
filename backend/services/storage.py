@@ -198,12 +198,20 @@ class S3Storage(StorageBackend):
 
     def _exists_sync(self, key: str) -> bool:
         """Sync check existence in S3."""
+        from botocore.exceptions import ClientError
+        
         try:
             self._s3.head_object(Bucket=self.bucket, Key=key)
             return True
-        except self._s3.exceptions.ClientError:
+        except ClientError as e:
+            # 404 means file doesn't exist, which is expected
+            if e.response.get('Error', {}).get('Code') == '404':
+                return False
+            # Log other errors but still return False
+            print(f"[S3] Error checking existence for {key}: {e}")
             return False
-        except Exception:
+        except Exception as e:
+            print(f"[S3] Unexpected error checking existence for {key}: {e}")
             return False
             
     def _get_file_stats_sync(self, key: str) -> Optional[FileStats]:
