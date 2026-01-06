@@ -164,7 +164,7 @@ class S3Storage(StorageBackend):
     
     def _get_key(self, path: str) -> str:
         """Get S3 key from path."""
-        path = path.lstrip("/")
+        path = str(path).lstrip("/")
         if self.prefix:
             return f"{self.prefix}/{path}"
         return path
