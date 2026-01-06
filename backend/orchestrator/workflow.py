@@ -241,18 +241,12 @@ async def load_data_node(state: TransformationState) -> TransformationState:
     
     try:
         storage = get_storage()
-        data_path = state["data_path"]
+        # Ensure path is a string for storage backend
+        data_path = str(state["data_path"])
         
-        if settings.storage.is_s3:
-            # Read from S3
-            content = await storage.read_file(data_path)
-            df = pd.read_csv(io.BytesIO(content))
-        else:
-            # Check if it's already a Path or string
-            if hasattr(data_path, 'exists'):
-                df = pd.read_csv(data_path)
-            else:
-                df = pd.read_csv(data_path)
+        # Read from storage (works for both S3 and local)
+        content = await storage.read_file(data_path)
+        df = pd.read_csv(io.BytesIO(content))
         
         return {**state, "df": df, "error_message": ""}
     except Exception as e:
