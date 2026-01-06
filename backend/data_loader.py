@@ -12,70 +12,89 @@ Configuration is loaded from the centralized config module.
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import io
 from typing import Optional, Tuple
 
 import pandas as pd
 
 from config import settings
+from services.storage import get_storage
 
 
-def get_file_size_mb(file_path: Path) -> float:
+async def get_file_size_mb(file_path: str) -> float:
     """Get file size in megabytes.
     
     Args:
-        file_path: Path to the file.
+        file_path: Path or key to the file.
     
     Returns:
         File size in MB.
     """
-    return os.path.getsize(file_path) / (1024 * 1024)
+    storage = get_storage()
+    try:
+        stats = await storage.get_file_stats(str(file_path))
+        return stats["size"] / (1024 * 1024)
+    except Exception:
+        return 0.0
 
 
-def estimate_row_count(file_path: Path) -> int:
-    """Quickly estimate row count without loading full file.
+async def estimate_row_count(file_path: str) -> int:
+    """Quickly estimate row count.
     
     Uses a sample of the first 1000 rows to estimate the average
     row size, then extrapolates based on total file size.
     
     Args:
-        file_path: Path to CSV file.
+        file_path: Path or key to CSV file.
     
     Returns:
         Estimated number of rows.
     """
+    storage = get_storage()
     try:
-        chunk = pd.read_csv(file_path, nrows=1000)
+        # Read header + small sample
+        # Optimized: Fetch only the first 1MB using read_head (Range request)
+        content = await storage.read_head(str(file_path), 1024 * 1024)
+        
+        chunk = pd.read_csv(io.BytesIO(content), nrows=1000)
         if len(chunk) == 0:
             return 0
         
-        file_size = os.path.getsize(file_path)
+        size_mb = await get_file_size_mb(file_path)
+        file_size_bytes = size_mb * 1024 * 1024
+        
+        # Approximate
         avg_row_size = len(chunk.to_csv(index=False)) / len(chunk)
-        estimated = int(file_size / avg_row_size)
+        if avg_row_size == 0: return 0
+        
+        estimated = int(file_size_bytes / avg_row_size)
         return estimated
     except Exception:
         return 0
 
 
-def is_large_dataset(file_path: Path) -> Tuple[bool, Optional[int]]:
+async def is_large_dataset(file_path: str) -> Tuple[bool, Optional[int]]:
     """Check if dataset is large and return estimated row count.
     
-    A dataset is considered large if:
-    - File size exceeds configured threshold, OR
-    - Estimated rows exceed configured threshold
-    
     Args:
-        file_path: Path to CSV file.
+        file_path: Path or key to CSV file.
     
     Returns:
         Tuple of (is_large, estimated_rows).
     """
-    if not file_path.exists():
+    storage = get_storage()
+    path_str = str(file_path)
+    
+    if not await storage.exists(path_str):
         return False, None
     
-    size_mb = get_file_size_mb(file_path)
-    estimated_rows = estimate_row_count(file_path)
+    size_mb = await get_file_size_mb(path_str)
+    
+    # Only estimate rows if size is borderline, otherwise trust size
+    if size_mb > settings.data_loader.large_file_size_mb:
+        return True, None
+        
+    estimated_rows = await estimate_row_count(path_str)
     
     is_large = (
         size_mb > settings.data_loader.large_file_size_mb or 
@@ -84,72 +103,78 @@ def is_large_dataset(file_path: Path) -> Tuple[bool, Optional[int]]:
     return is_large, estimated_rows
 
 
-def load_dataframe_smart(
-    file_path: Path,
+async def load_dataframe_smart(
+    file_path: str,
     max_rows: Optional[int] = None,
     sample: bool = False,
 ) -> pd.DataFrame:
     """Load DataFrame with smart handling for large files.
     
-    For large files:
-    - If sample=True: Returns a random sample
-    - If max_rows specified: Returns first max_rows rows
-    - Otherwise: Returns first sample_size rows
-    
     Args:
-        file_path: Path to CSV file.
-        max_rows: Maximum rows to load (None = all for small files).
+        file_path: Path or key to CSV file.
+        max_rows: Maximum rows to load.
         sample: If True and file is large, load a random sample.
     
     Returns:
-        DataFrame with loaded data.
+        DataFrame.
     """
-    if not file_path.exists():
+    storage = get_storage()
+    path_str = str(file_path)
+    
+    if not await storage.exists(path_str):
         return pd.DataFrame()
     
-    is_large, estimated_rows = is_large_dataset(file_path)
+    is_large, estimated_rows = await is_large_dataset(path_str)
     sample_size = settings.data_loader.sample_size
+    
+    content = await storage.read_file(path_str)
+    file_obj = io.BytesIO(content)
     
     if is_large:
         if sample:
             total_rows = estimated_rows or 1_000_000
             actual_sample_size = min(sample_size, total_rows)
+            # Reservoir sampling or skip logic
+            # Since we have full content in memory (due to simple S3Storage), 
+            # we can just read generic sample
             skip = sorted(
                 pd.Series(range(total_rows))
-                .sample(n=total_rows - actual_sample_size, random_state=42)
+                .sample(n=max(0, total_rows - actual_sample_size), random_state=42)
                 .tolist()
             )
-            return pd.read_csv(file_path, skiprows=skip, nrows=actual_sample_size)
+            # Be careful with skip indices on partial reads, but here we read from bytes
+            return pd.read_csv(file_obj, skiprows=skip, nrows=actual_sample_size)
         elif max_rows:
-            return pd.read_csv(file_path, nrows=max_rows)
+            return pd.read_csv(file_obj, nrows=max_rows)
         else:
-            return pd.read_csv(file_path, nrows=sample_size)
+            return pd.read_csv(file_obj, nrows=sample_size)
     
     if max_rows:
-        return pd.read_csv(file_path, nrows=max_rows)
-    return pd.read_csv(file_path)
+        return pd.read_csv(file_obj, nrows=max_rows)
+        
+    return pd.read_csv(file_obj)
 
 
-def count_rows_chunked(
-    file_path: Path, 
+async def count_rows_chunked(
+    file_path: str, 
     filter_column: Optional[str] = None, 
     filter_value: Optional[str] = None,
 ) -> int:
-    """Count rows efficiently using chunked reading.
+    """Count rows efficiently using chunked reading."""
+    storage = get_storage()
+    path_str = str(file_path)
     
-    Args:
-        file_path: Path to CSV file.
-        filter_column: Optional column to filter by.
-        filter_value: Optional value to match (case-insensitive).
-    
-    Returns:
-        Total count of matching rows.
-    """
+    if not await storage.exists(path_str):
+        return 0
+
     count = 0
     chunk_size = settings.data_loader.chunk_size
     
     try:
-        for chunk in pd.read_csv(file_path, chunksize=chunk_size):
+        content = await storage.read_file(path_str)
+        file_obj = io.BytesIO(content)
+        
+        for chunk in pd.read_csv(file_obj, chunksize=chunk_size):
             if filter_column and filter_value:
                 if filter_column in chunk.columns:
                     chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
@@ -159,102 +184,87 @@ def count_rows_chunked(
     return count
 
 
-def _iterate_column_chunks(file_path: Path, column: str):
+async def _iterate_column_chunks(file_path: str, column: str):
     """Iterate over column chunks, dropping nulls."""
+    storage = get_storage()
+    path_str = str(file_path)
     chunk_size = settings.data_loader.chunk_size
-    for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=[column]):
+    
+    content = await storage.read_file(path_str)
+    file_obj = io.BytesIO(content)
+    
+    for chunk in pd.read_csv(file_obj, chunksize=chunk_size, usecols=[column]):
         yield chunk.dropna(subset=[column])
 
 
-def _calculate_mean_chunked(file_path: Path, column: str) -> Optional[float]:
-    """Calculate mean using chunked reading."""
-    total_sum = 0.0
-    total_count = 0
-    for chunk in _iterate_column_chunks(file_path, column):
-        total_sum += chunk[column].sum()
-        total_count += len(chunk)
-    return total_sum / total_count if total_count > 0 else None
-
-
-def _calculate_sum_chunked(file_path: Path, column: str) -> float:
-    """Calculate sum using chunked reading."""
-    total_sum = 0.0
-    for chunk in _iterate_column_chunks(file_path, column):
-        total_sum += chunk[column].sum()
-    return total_sum
-
-
-def _calculate_extremum_chunked(file_path: Path, column: str, find_max: bool) -> Optional[float]:
-    """Calculate min or max using chunked reading."""
-    result = None
-    for chunk in _iterate_column_chunks(file_path, column):
-        chunk_val = chunk[column].max() if find_max else chunk[column].min()
-        if result is None:
-            result = chunk_val
-        elif find_max:
-            result = max(result, chunk_val)
-        else:
-            result = min(result, chunk_val)
-    return result
-
-
-def calculate_stat_chunked(
-    file_path: Path,
+async def calculate_stat_chunked(
+    file_path: str,
     column: str,
     stat: str = "mean",
 ) -> Optional[float]:
-    """Calculate statistics efficiently using chunked reading.
+    """Calculate statistics efficiently using chunked reading."""
+    storage = get_storage()
+    path_str = str(file_path)
     
-    Supports streaming calculation of mean, sum, min, and max
-    without loading the entire file into memory.
-    
-    Args:
-        file_path: Path to CSV file.
-        column: Column name to calculate statistics for.
-        stat: Statistic type: 'mean', 'sum', 'min', or 'max'.
-    
-    Returns:
-        Calculated statistic value, or None on error.
-    """
     if stat not in ["mean", "sum", "min", "max"]:
         return None
     
+    if not await storage.exists(path_str):
+        return None
+    
     try:
-        first_chunk = pd.read_csv(file_path, nrows=1000)
-        if column not in first_chunk.columns:
-            return None
-        if not pd.api.types.is_numeric_dtype(first_chunk[column]):
-            return None
+        # For simple byte-stream, we can reuse logic, but we need to iterate async generator
+        # Implementing manually for clarity since we can't easily pass async generator to dict lambda
         
-        stat_calculators = {
-            "mean": lambda: _calculate_mean_chunked(file_path, column),
-            "sum": lambda: _calculate_sum_chunked(file_path, column),
-            "min": lambda: _calculate_extremum_chunked(file_path, column, find_max=False),
-            "max": lambda: _calculate_extremum_chunked(file_path, column, find_max=True),
-        }
+        total_sum = 0.0
+        total_count = 0
+        extremum = None
         
-        return stat_calculators[stat]()
+        found_col = False
+        
+        async for chunk in _iterate_column_chunks(path_str, column):
+            found_col = True
+            if stat == "mean":
+                total_sum += chunk[column].sum()
+                total_count += len(chunk)
+            elif stat == "sum":
+                total_sum += chunk[column].sum()
+            elif stat == "min":
+                val = chunk[column].min()
+                extremum = val if extremum is None else min(extremum, val)
+            elif stat == "max":
+                val = chunk[column].max()
+                extremum = val if extremum is None else max(extremum, val)
+                
+        if not found_col:
+            # Maybe column check failed inside iterator or file empty
+            return None
+
+        if stat == "mean":
+            return total_sum / total_count if total_count > 0 else None
+        elif stat == "sum":
+            return total_sum
+        else:
+            return extremum
             
     except Exception as e:
         print(f"[DataLoader] Error calculating {stat}: {e}")
         return None
 
 
-def group_count_chunked(file_path: Path, column: str) -> dict:
-    """Count groups efficiently using chunked reading.
+async def group_count_chunked(file_path: str, column: str) -> dict:
+    """Count groups efficiently using chunked reading."""
+    storage = get_storage()
+    path_str = str(file_path)
     
-    Args:
-        file_path: Path to CSV file.
-        column: Column to group by.
-    
-    Returns:
-        Dictionary mapping {value: count}.
-    """
     counts: dict = {}
     chunk_size = settings.data_loader.chunk_size
     
     try:
-        for chunk in pd.read_csv(file_path, chunksize=chunk_size, usecols=[column]):
+        content = await storage.read_file(path_str)
+        file_obj = io.BytesIO(content)
+        
+        for chunk in pd.read_csv(file_obj, chunksize=chunk_size, usecols=[column]):
             if column in chunk.columns:
                 chunk_counts = chunk[column].value_counts().to_dict()
                 for key, val in chunk_counts.items():
@@ -265,48 +275,43 @@ def group_count_chunked(file_path: Path, column: str) -> dict:
     return counts
 
 
-def get_random_sample_chunked(
-    file_path: Path,
+async def get_random_sample_chunked(
+    file_path: str,
     filter_column: Optional[str] = None,
     filter_value: Optional[str] = None,
     n: int = 1,
 ) -> pd.DataFrame:
-    """Get random sample efficiently from large file using reservoir sampling.
-    
-    Uses reservoir sampling algorithm to select random rows without
-    loading the entire file into memory.
-    
-    Args:
-        file_path: Path to CSV file.
-        filter_column: Optional column to filter by.
-        filter_value: Optional value to match (case-insensitive).
-        n: Number of samples to return.
-    
-    Returns:
-        DataFrame with n random rows.
-    """
+    """Get random sample efficiently using reservoir sampling."""
     import random
+    storage = get_storage()
+    path_str = str(file_path)
     
     samples = []
     seen = 0
     chunk_size = settings.data_loader.chunk_size
     
-    for chunk in pd.read_csv(file_path, chunksize=chunk_size):
-        if filter_column and filter_value:
-            if filter_column in chunk.columns:
-                chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
-        
-        if len(chunk) == 0:
-            continue
-        
-        for _, row in chunk.iterrows():
-            seen += 1
-            if len(samples) < n:
-                samples.append(row)
-            else:
-                j = random.randint(0, seen - 1)
-                if j < n:
-                    samples[j] = row
+    try:
+        content = await storage.read_file(path_str)
+        file_obj = io.BytesIO(content)
+    
+        for chunk in pd.read_csv(file_obj, chunksize=chunk_size):
+            if filter_column and filter_value:
+                if filter_column in chunk.columns:
+                    chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
+            
+            if len(chunk) == 0:
+                continue
+            
+            for _, row in chunk.iterrows():
+                seen += 1
+                if len(samples) < n:
+                    samples.append(row)
+                else:
+                    j = random.randint(0, seen - 1)
+                    if j < n:
+                        samples[j] = row
+    except Exception:
+        pass
     
     if samples:
         return pd.DataFrame(samples)

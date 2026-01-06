@@ -35,38 +35,8 @@ class StorageBackend(ABC):
     """Abstract base class for storage backends."""
     
     @abstractmethod
-    async def read_file(self, path: str) -> bytes:
-        """Read file content as bytes."""
-        pass
-    
-    @abstractmethod
-    async def write_file(self, path: str, content: bytes) -> None:
-        """Write content to file."""
-        pass
-    
-    @abstractmethod
-    async def delete_file(self, path: str) -> bool:
-        """Delete a file. Returns True if deleted, False if not found."""
-        pass
-    
-    @abstractmethod
-    async def exists(self, path: str) -> bool:
-        """Check if file exists."""
-        pass
-    
-    @abstractmethod
-    async def list_files(self, prefix: str) -> List[str]:
-        """List files with given prefix."""
-        pass
-    
-    @abstractmethod
-    async def get_file_stats(self, path: str) -> Optional[FileStats]:
-        """Get file statistics."""
-        pass
-    
-    @abstractmethod
-    def get_local_path(self, path: str) -> Optional[Path]:
-        """Get local filesystem path if available (for FileResponse)."""
+    async def read_head(self, path: str, n_bytes: int = 1024) -> bytes:
+        """Read the first n bytes of a file."""
         pass
 
     async def read_csv(self, path: str) -> pd.DataFrame:
@@ -98,6 +68,14 @@ class LocalStorage(StorageBackend):
         file_path = self._resolve_path(path)
         async with aiofiles.open(file_path, "rb") as f:
             return await f.read()
+
+    async def read_head(self, path: str, n_bytes: int = 1024) -> bytes:
+        """Read the first n bytes of a file."""
+        file_path = self._resolve_path(path)
+        if not file_path.exists():
+            return b""
+        async with aiofiles.open(file_path, "rb") as f:
+            return await f.read(n_bytes)
     
     async def write_file(self, path: str, content: bytes) -> None:
         """Write content to file."""
@@ -190,30 +168,36 @@ class S3Storage(StorageBackend):
         if self.prefix:
             return f"{self.prefix}/{path}"
         return path
-    
-    async def read_file(self, path: str) -> bytes:
-        """Read file content from S3."""
-        key = self._get_key(path)
+
+    def _read_file_sync(self, key: str) -> bytes:
+        """Sync read file from S3."""
         response = self._s3.get_object(Bucket=self.bucket, Key=key)
         return response["Body"].read()
-    
-    async def write_file(self, path: str, content: bytes) -> None:
-        """Write content to S3."""
-        key = self._get_key(path)
+
+    def _read_head_sync(self, key: str, n_bytes: int) -> bytes:
+        """Sync read head from S3 using Range."""
+        # Range is inclusive, so bytes=0-{n_bytes-1}
+        response = self._s3.get_object(
+            Bucket=self.bucket, 
+            Key=key, 
+            Range=f"bytes=0-{n_bytes-1}"
+        )
+        return response["Body"].read()
+
+    def _write_file_sync(self, key: str, content: bytes) -> None:
+        """Sync write file to S3."""
         self._s3.put_object(Bucket=self.bucket, Key=key, Body=content)
-    
-    async def delete_file(self, path: str) -> bool:
-        """Delete a file from S3."""
-        key = self._get_key(path)
+
+    def _delete_file_sync(self, key: str) -> bool:
+        """Sync delete file from S3."""
         try:
             self._s3.delete_object(Bucket=self.bucket, Key=key)
             return True
         except Exception:
             return False
-    
-    async def exists(self, path: str) -> bool:
-        """Check if file exists in S3."""
-        key = self._get_key(path)
+
+    def _exists_sync(self, key: str) -> bool:
+        """Sync check existence in S3."""
         try:
             self._s3.head_object(Bucket=self.bucket, Key=key)
             return True
@@ -221,25 +205,9 @@ class S3Storage(StorageBackend):
             return False
         except Exception:
             return False
-    
-    async def list_files(self, prefix: str) -> List[str]:
-        """List files in S3 with given prefix."""
-        full_prefix = self._get_key(prefix)
-        paginator = self._s3.get_paginator("list_objects_v2")
-        
-        files = []
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                # Remove storage prefix to get relative path
-                if self.prefix and key.startswith(self.prefix + "/"):
-                    key = key[len(self.prefix) + 1:]
-                files.append(key)
-        return files
-    
-    async def get_file_stats(self, path: str) -> Optional[FileStats]:
-        """Get file statistics from S3."""
-        key = self._get_key(path)
+            
+    def _get_file_stats_sync(self, key: str) -> Optional[FileStats]:
+        """Sync get stats from S3."""
         try:
             response = self._s3.head_object(Bucket=self.bucket, Key=key)
             return FileStats(
@@ -249,6 +217,77 @@ class S3Storage(StorageBackend):
             )
         except Exception:
             return None
+    
+    async def read_file(self, path: str) -> bytes:
+        """Read file content from S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._read_file_sync, key)
+
+    async def read_head(self, path: str, n_bytes: int = 1024) -> bytes:
+        """Read first n bytes from S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._read_head_sync, key, n_bytes)
+    
+    async def write_file(self, path: str, content: bytes) -> None:
+        """Write content to S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._write_file_sync, key, content)
+    
+    async def delete_file(self, path: str) -> bool:
+        """Delete a file from S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._delete_file_sync, key)
+    
+    async def exists(self, path: str) -> bool:
+        """Check if file exists in S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._exists_sync, key)
+    
+    async def list_files(self, prefix: str) -> List[str]:
+        """List files in S3 with given prefix (non-blocking possible but keeping simple for now).
+           Pagination involves multiple calls so wrapping strictly is harder. 
+           Should ideally wrap, but list_files is less critical for latency than read.
+        """
+        # Leaving sync for now or wrapping entire pagination? 
+        # Pagination returns iterator.
+        full_prefix = self._get_key(prefix)
+        paginator = self._s3.get_paginator("list_objects_v2")
+        
+        files = []
+        # This part is still blocking. For completeness, should move.
+        # But paginator yields pages. 
+        # For simplicity in this step, I'll execute sync logic in executor.
+        import asyncio
+        loop = asyncio.get_running_loop()
+        
+        def _list_sync():
+            f = []
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=full_prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if self.prefix and key.startswith(self.prefix + "/"):
+                        key = key[len(self.prefix) + 1:]
+                    f.append(key)
+            return f
+
+        return await loop.run_in_executor(None, _list_sync)
+    
+    async def get_file_stats(self, path: str) -> Optional[FileStats]:
+        """Get file statistics from S3 (non-blocking)."""
+        import asyncio
+        key = self._get_key(path)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_file_stats_sync, key)
     
     def get_local_path(self, path: str) -> Optional[Path]:
         """S3 doesn't have local paths."""

@@ -74,7 +74,7 @@ class ChatService:
         Returns:
             Assistant's response message.
         """
-        df, columns, is_large = self._prepare_context(data_path, context)
+        df, columns, is_large = await self._prepare_context(data_path, context)
         
         query_type = await self._classify_query_type(user_message, columns)
         print(f"[Chat] Query: {user_message[:50]}... | Type: {query_type}")
@@ -95,7 +95,7 @@ class ChatService:
         messages.append({"role": "user", "content": user_message})
         return await self._client.complete(messages, temperature=0.7)
     
-    def _prepare_context(
+    async def _prepare_context(
         self,
         data_path: Optional[str],
         context: Optional[Dict[str, Any]],
@@ -115,10 +115,9 @@ class ChatService:
         df = None
         
         if data_path:
-            path = Path(data_path)
-            is_large, _ = is_large_dataset(path)
+            is_large, _ = await is_large_dataset(data_path)
             max_rows = settings.data_loader.sample_size if is_large else None
-            df = load_dataframe_smart(path, max_rows=max_rows, sample=is_large)
+            df = await load_dataframe_smart(data_path, max_rows=max_rows, sample=is_large)
         
         columns = context.get("columns", []) if context else []
         if df is not None and not columns:
@@ -352,7 +351,7 @@ class ChatService:
         query_results = await self._try_semantic_search(session, dataset_id, user_message)
         
         if not query_results:
-            query_results = self._get_sample_data_results(df, data_path)
+            query_results = await self._get_sample_data_results(df, data_path)
         
         system_prompt = self._build_data_response_prompt(stats, query_results)
         messages = [
@@ -407,7 +406,7 @@ class ChatService:
             print(f"[Chat] Semantic search failed: {e}")
             return None
     
-    def _get_sample_data_results(
+    async def _get_sample_data_results(
         self,
         df: Optional[pd.DataFrame],
         data_path: Optional[str],
@@ -427,7 +426,7 @@ class ChatService:
         
         if data_path:
             from data_loader import load_dataframe_smart
-            sample_df = load_dataframe_smart(Path(data_path), max_rows=3)
+            sample_df = await load_dataframe_smart(data_path, max_rows=3)
             if sample_df is not None and len(sample_df) > 0:
                 sample_rows = sample_df.to_dict(orient="records")
                 return "SAMPLE DATA:\n" + "\n".join([str(row) for row in sample_rows])
