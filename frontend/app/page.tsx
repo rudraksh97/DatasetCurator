@@ -42,6 +42,7 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatWidth, setChatWidth] = useState(50);
   const [isResizing, setIsResizing] = useState(false);
+  const [pendingQueue, setPendingQueue] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -173,6 +174,38 @@ export default function Home() {
     }
   }, [datasetId, activeSession]);
 
+  const quickAsk = async (prompt: string) => {
+    if (!prompt.trim()) return;
+    const sessionId = datasetId || `session_${Date.now()}`;
+    if (!datasetId) {
+      setDatasetId(sessionId);
+      setActiveSession(sessionId);
+    }
+    addMessage("user", prompt);
+    setIsProcessing(true);
+    try {
+      const response = await sendChatMessage(sessionId, prompt);
+      addMessage("assistant", response.assistant_message);
+      // Refresh preview
+      try {
+        const data = await getPreview(sessionId, currentPage, 50);
+        if (data) {
+          setPreview(data.preview || []);
+          setCurrentPage(data.page || 1);
+          setTotalPages(data.total_pages || 1);
+          setTotalRows(data.total_rows || 0);
+        }
+      } catch {
+        /* ignore */
+      }
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      addMessage("assistant", `I encountered an error: ${errorMessage}. Try uploading a dataset first!`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const addMessage = (role: "user" | "assistant", content: string, id?: string) => {
     const newMessage: ChatMessage = { 
       id: id || Date.now().toString(), 
@@ -260,6 +293,53 @@ export default function Home() {
     downloadCuratedFile(datasetId);
   };
 
+  const ensureSession = useCallback(() => {
+    let sessionId = datasetId;
+    if (!sessionId) {
+      sessionId = `session_${Date.now()}`;
+      setDatasetId(sessionId);
+      setActiveSession(sessionId);
+    }
+    return sessionId;
+  }, [datasetId]);
+
+  const runMessage = useCallback(
+    async (msg: string) => {
+      const sessionId = ensureSession();
+      setIsProcessing(true);
+      try {
+        const response = await sendChatMessage(sessionId, msg);
+        addMessage("assistant", response.assistant_message);
+        try {
+          const data = await getPreview(sessionId, currentPage, 50);
+          if (data) {
+            setPreview(data.preview || []);
+            setCurrentPage(data.page || 1);
+            setTotalPages(data.total_pages || 1);
+            setTotalRows(data.total_rows || 0);
+          }
+        } catch {
+          /* ignore preview fetch errors */
+        }
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        addMessage("assistant", `I encountered an error: ${errorMessage}. Try uploading a dataset first!`);
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [addMessage, currentPage, ensureSession, getPreview]
+  );
+
+  // Process queued messages when idle
+  useEffect(() => {
+    if (!isProcessing && pendingQueue.length > 0) {
+      const next = pendingQueue[0];
+      setPendingQueue((prev) => prev.slice(1));
+      runMessage(next);
+    }
+  }, [isProcessing, pendingQueue, runMessage]);
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMessage.trim()) return;
@@ -281,38 +361,13 @@ export default function Home() {
       return;
     }
 
-    // Auto-generate session ID if none exists
-    let sessionId = datasetId;
-    if (!sessionId) {
-      sessionId = `session_${Date.now()}`;
-      setDatasetId(sessionId);
-      setActiveSession(sessionId);
+    // Queue if something is already processing or queued
+    if (isProcessing || pendingQueue.length > 0) {
+      setPendingQueue((prev) => [...prev, msg]);
+      return;
     }
 
-    setIsProcessing(true);
-    
-    try {
-      const response = await sendChatMessage(sessionId, msg);
-      addMessage("assistant", response.assistant_message);
-      
-      // Refresh data preview after chat (transformations may have occurred)
-      try {
-        const data = await getPreview(sessionId, currentPage, 50);
-        if (data) {
-          setPreview(data.preview || []);
-          setCurrentPage(data.page || 1);
-          setTotalPages(data.total_pages || 1);
-          setTotalRows(data.total_rows || 0);
-        }
-      } catch {
-        // Ignore preview fetch errors
-      }
-    } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      addMessage("assistant", `I encountered an error: ${errorMessage}. Try uploading a dataset first!`);
-    } finally {
-      setIsProcessing(false);
-    }
+    await runMessage(msg);
   };
 
   return (
@@ -384,7 +439,6 @@ export default function Home() {
               placeholder={isProcessing ? "Processing..." : "Ask anything or upload a CSV..."}
               value={inputMessage}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
-              disabled={isProcessing}
             />
             {preview.length > 0 && (
               <button
@@ -397,7 +451,7 @@ export default function Home() {
                 {Icons.download}
               </button>
             )}
-            <Button type="submit" disabled={isProcessing || !inputMessage.trim()}>
+            <Button type="submit" disabled={!inputMessage.trim()}>
               {Icons.send}
             </Button>
           </form>
@@ -425,7 +479,27 @@ export default function Home() {
               </div>
             )}
           </div>
-
+          {/* Quick chips */}
+          {preview.length > 0 && (
+            <div className="quick-actions">
+              <span className="quick-label">Try:</span>
+              <div className="chips">
+                <Button size="sm" variant="outline" onClick={() => quickAsk("Count rows")}>Row count</Button>
+                <Button size="sm" variant="outline" onClick={() => quickAsk("List columns")}>List columns</Button>
+                <Button size="sm" variant="outline" onClick={() => quickAsk("Group by course and count")}>Count by course</Button>
+                <Button size="sm" variant="outline" onClick={() => quickAsk("Average study_hours by course")}>Avg study_hours by course</Button>
+                <Button size="sm" variant="outline" onClick={() => quickAsk("Show missing values summary")}>Missing values</Button>
+              </div>
+            </div>
+          )}
+          {/* Column chips */}
+          {preview.length > 0 && (
+            <div className="columns-bar">
+              {Object.keys(preview[0]).map((col) => (
+                <Badge key={col} variant="secondary" className="column-chip">{col}</Badge>
+              ))}
+            </div>
+          )}
           {preview.length > 0 ? (
             <>
               <ScrollArea className="table-scroll">
@@ -433,7 +507,7 @@ export default function Home() {
                   <THead>
                     <TR>
                       {Object.keys(preview[0]).map((col: string) => (
-                        <TH key={col}>{col}</TH>
+                        <TH key={col} className="sticky-th">{col}</TH>
                       ))}
                     </TR>
                   </THead>
@@ -441,7 +515,12 @@ export default function Home() {
                     {preview.map((row: Record<string, unknown>, idx: number) => (
                       <TR key={idx}>
                         {Object.entries(row).map(([col, val]: [string, unknown]) => (
-                          <TD key={col}>{val === null || val === "" ? <span className="null-value">null</span> : String(val)}</TD>
+                          <TD
+                            key={col}
+                            className={typeof val === "number" || (!isNaN(Number(val)) && val !== null && val !== "") ? "num-cell" : ""}
+                          >
+                            {val === null || val === "" ? <span className="null-value">null</span> : String(val)}
+                          </TD>
                         ))}
                       </TR>
                     ))}
