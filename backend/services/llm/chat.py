@@ -210,6 +210,39 @@ class ChatService:
                 print("[Chat] Empty response with no tools, retrying without function calling...")
                 return await self._chat_without_tools(df, user_message, context, session, dataset_id, data_path)
 
+            # If the model returned text but no tool calls, it might not have understood
+            # that it should query the data. Check if this looks like a data query that
+            # should have used tools.
+            if message.content and not message.tool_calls:
+                content_lower = message.content.lower()
+                # Detect phrases indicating the model couldn't access data
+                no_data_phrases = [
+                    "i don't have access",
+                    "i cannot provide",
+                    "data is not provided",
+                    "without more information",
+                    "i can't directly",
+                    "i cannot directly",
+                    "not provided to me",
+                    "i don't have the actual",
+                    "i cannot see the actual",
+                ]
+                if any(phrase in content_lower for phrase in no_data_phrases):
+                    print("[Chat] Model claims no data access - forcing tool-based query...")
+                    # Add stronger instruction and retry
+                    messages.append({
+                        "role": "user",
+                        "content": f"You DO have access to query the data using the available functions. Please use the appropriate function (like get_distinct_values, get_statistics, group_by, etc.) to answer: {user_message}"
+                    })
+                    retry_response = await self._client.complete_with_tools(
+                        messages,
+                        tools=CHAT_TOOLS,
+                        temperature=0.3,
+                        max_tokens=2048,
+                    )
+                    message = retry_response.choices[0].message
+                    print(f"[Chat] Retry response: content={repr(message.content)}, tool_calls={message.tool_calls}")
+
             message = await self._execute_tool_calls(df, message, messages)
             
             if message.content:

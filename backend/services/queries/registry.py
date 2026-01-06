@@ -13,8 +13,10 @@ import pandas as pd
 from protocols import QueryResult
 from services.queries.base import BaseQueryHandler
 from services.queries.handlers import (
+    AuditDataQualityHandler,
     CalculateRatioHandler,
     FindColumnsHandler,
+    GetDistinctValuesHandler,
     GetRandomValueHandler,
     GetRowCountHandler,
     GetRowHandler,
@@ -54,9 +56,11 @@ class QueryHandlerRegistry:
             CalculateRatioHandler(),
             GetStatisticsHandler(),
             GroupByHandler(),
+            GetDistinctValuesHandler(),
             GetRandomValueHandler(),
             ListColumnsHandler(),
             GetRowCountHandler(),
+            AuditDataQualityHandler(),
         ]
         for handler in handlers:
             self.register(handler)

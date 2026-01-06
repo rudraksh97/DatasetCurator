@@ -149,6 +149,21 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_distinct_values",
+            "description": "Get all distinct/unique values from a column. Use for questions like 'what are the distinct ages', 'unique values in X', 'all different Y values', 'show me all categories'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string", "description": "Column name to get distinct values from"},
+                    "limit": {"type": "integer", "description": "Max number of distinct values to return (default 50). Use a higher limit if user wants ALL values."},
+                },
+                "required": ["column"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_columns",
             "description": "List all columns in the dataset",
             "parameters": {"type": "object", "properties": {}},
@@ -160,6 +175,23 @@ CHAT_TOOLS: List[Dict[str, Any]] = [
             "name": "get_row_count",
             "description": "Get total number of rows and columns",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "audit_data_quality",
+            "description": "Run a comprehensive data quality audit. Checks for: null values, duplicate rows, potential outliers, suspicious values (Unknown, N/A, etc.), and low-cardinality columns. Use for questions like 'check data quality', 'find problems', 'are there issues', 'inconsistent data', 'audit the dataset'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_sample_issues": {
+                        "type": "boolean",
+                        "description": "If true, include sample problematic values (default: true)"
+                    },
+                },
+                "required": [],
+            },
         },
     },
 ]

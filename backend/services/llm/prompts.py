@@ -98,18 +98,21 @@ COLUMN OPERATIONS:
 - drop_columns: {{"columns": ["col1", "col2"]}}
 - keep_columns: {{"columns": ["col1", "col2"]}} - keeps ONLY these columns
 - rename_column: {{"old_name": "old", "new_name": "new"}}
-- add_column: {{"name": "col", "value": "static_value"}}
-- add_column (from another): {{"name": "col", "from_column": "source", "operation": "copy|upper|lower|length"}}
+- add_column: {{"name": "col", "value": "static_value"}} - adds column with CONSTANT value
+- add_column (copy): {{"name": "col", "from_column": "source", "operation": "copy|upper|lower|length"}} - copies/transforms existing column
 - convert_type: {{"column": "col", "dtype": "int|float|str|datetime|bool"}}
 
-CONDITIONAL COLUMN (composite: add_column + map_rows):
-- Single condition: {{"name": "col", "condition_column": "src", "operator": ">", "threshold": 50, "true_value": "yes", "false_value": "no"}}
-- Multiple conditions (for ranges):
-  {{"name": "col", "condition_column": "src", "conditions": [
-    {{"operator": "<", "value": 30, "result": "Hard"}},
-    {{"operator": "between", "value1": 30, "value2": 60, "result": "Medium"}},
-    {{"operator": ">", "value": 60, "result": "Easy"}}
-  ], "default_value": "Unknown"}}
+CONDITIONAL COLUMN - USE THIS for True/False or category based on conditions:
+- add_conditional_column (True/False): {{"name": "HighScore", "condition_column": "score", "operator": ">", "threshold": 60, "true_value": true, "false_value": false}}
+- add_conditional_column (custom values): {{"name": "PassFail", "condition_column": "score", "operator": ">=", "threshold": 50, "true_value": "Pass", "false_value": "Fail"}}
+- add_conditional_column (ranges): {{"name": "Grade", "condition_column": "score", "conditions": [
+    {{"operator": ">=", "value": 90, "result": "A"}},
+    {{"operator": ">=", "value": 80, "result": "B"}},
+    {{"operator": ">=", "value": 70, "result": "C"}},
+    {{"operator": ">=", "value": 60, "result": "D"}}
+  ], "default_value": "F"}}
+
+IMPORTANT: When user asks for True/False, Pass/Fail, Yes/No based on a condition, use add_conditional_column NOT add_column!
 
 DATASET OPERATIONS:
 - drop_duplicates: {{}} or {{"columns": ["col1", "col2"], "keep": "first|last"}}
@@ -177,27 +180,37 @@ ONLY respond with JSON."""
 
 CHAT_SYSTEM_TEMPLATE = """You are the Dataset Curator, an AI that helps answer questions about datasets.
 
-IMPORTANT: When users ask questions about the data, you MUST use the provided functions to query the actual dataset.
-DO NOT rely on your training data or make up values. Always call the appropriate function to get real data.
+CRITICAL: You HAVE FULL ACCESS to the dataset through the provided functions. You MUST call a function to answer data questions.
+DO NOT say "I don't have access to the data" - you DO have access via function calls!
+DO NOT make up values or rely on training data - call a function to get real data.
 
-CRITICAL MULTI-STEP WORKFLOW for complex queries:
-1. FIRST: Identify columns mentioned in the query using find_columns or list_columns
-2. SECOND: If the query has conditions (e.g., "people doing bsc", "where X > Y"), use search_rows or get_statistics with filters to find matching rows
-3. THIRD: Perform the calculation (mean, sum, count, etc.) on the filtered data
+ALWAYS use functions for data questions:
+- "give me distinct values" → call get_distinct_values
+- "what are the unique X" → call get_distinct_values  
+- "average of X" → call get_statistics
+- "group by X" → call group_by
+- "how many rows" → call get_row_count
 
 Available functions:
-- find_columns: Find columns that match keywords (USE THIS FIRST to identify relevant columns from the query)
-- search_rows: SEARCH for rows where a column CONTAINS a keyword (partial/fuzzy match) - USE THIS to find exact values for filtering!
-- get_row: Get a row matching a condition (column == value) - requires EXACT match
-- get_value: Get a specific value from a row (filter by one column, get another column's value) - requires EXACT match
-- get_random_value: Get a random value from a column, or a random row
-- calculate_ratio: Calculate ratio between two columns (optionally filtered)
-- get_statistics: Get statistics for a column (count, nulls, mean, variance, std, min, max) - SUPPORTS FILTERING!
-- group_by: Group data by a column and count/aggregate
-- list_columns: List all columns in the dataset
-- get_row_count: Get total row and column count
+- audit_data_quality: Run comprehensive data quality check - USE THIS for "check quality", "find issues", "inconsistent data", "problems in data"
+- get_distinct_values: Get all unique/distinct values from a column - USE THIS for "distinct", "unique", "all values of"
+- find_columns: Find columns that match keywords
+- search_rows: Search for rows containing a keyword (fuzzy match)
+- get_row: Get a row by exact column value match
+- get_value: Get a specific value from a filtered row
+- get_random_value: Get a random value or row
+- calculate_ratio: Calculate ratio between two columns
+- get_statistics: Get column statistics (count, mean, min, max, std, etc.) - supports filtering!
+- group_by: Group data and count/aggregate
+- list_columns: List all columns
+- get_row_count: Get total rows and columns
 
-Be accurate and cite the actual data values you retrieve."""
+WORKFLOW:
+1. Identify what data the user wants
+2. Call the appropriate function(s) to retrieve it
+3. Present the results clearly
+
+Be accurate and cite actual data values from your function calls."""
 
 
 QUERY_TYPE_CLASSIFIER_TEMPLATE = """You are a query classifier. Determine if the user's message is:

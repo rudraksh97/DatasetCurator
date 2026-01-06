@@ -348,6 +348,54 @@ class GetRandomValueHandler(BaseQueryHandler):
             return self._error(str(e))
 
 
+class GetDistinctValuesHandler(BaseQueryHandler):
+    """Handler for getting distinct values from a column."""
+    
+    @property
+    def query_type(self) -> str:
+        return "distinct_values"
+    
+    @property
+    def supported_functions(self) -> List[str]:
+        return ["get_distinct_values"]
+    
+    def execute(self, df: pd.DataFrame, arguments: Dict[str, Any]) -> QueryResult:
+        column = arguments.get("column")
+        limit = arguments.get("limit", 50)
+        
+        if not column:
+            return self._error("Missing column parameter")
+        
+        col_match = find_column_case_insensitive(df, column)
+        if not col_match:
+            return self._error(f"Column '{column}' not found. Available: {', '.join(df.columns[:10])}")
+        
+        try:
+            distinct_values = df[col_match].dropna().unique()
+            total_distinct = len(distinct_values)
+            
+            # Sort values if possible
+            try:
+                distinct_values = sorted(distinct_values)
+            except TypeError:
+                # Can't sort mixed types, keep as is
+                pass
+            
+            # Apply limit
+            limited_values = distinct_values[:limit] if limit else distinct_values
+            limited_values = [convert_to_native_type(v) for v in limited_values]
+            
+            return self._success(
+                column=col_match,
+                distinct_values=limited_values,
+                total_distinct=total_distinct,
+                showing=len(limited_values),
+                has_more=total_distinct > len(limited_values),
+            )
+        except Exception as e:
+            return self._error(str(e))
+
+
 class ListColumnsHandler(BaseQueryHandler):
     """Handler for listing all columns."""
     
@@ -376,3 +424,222 @@ class GetRowCountHandler(BaseQueryHandler):
     
     def execute(self, df: pd.DataFrame, arguments: Dict[str, Any]) -> QueryResult:
         return self._success(row_count=int(len(df)), column_count=int(len(df.columns)))
+
+
+class AuditDataQualityHandler(BaseQueryHandler):
+    """Handler for comprehensive data quality auditing."""
+    
+    @property
+    def query_type(self) -> str:
+        return "audit"
+    
+    @property
+    def supported_functions(self) -> List[str]:
+        return ["audit_data_quality"]
+    
+    def execute(self, df: pd.DataFrame, arguments: Dict[str, Any]) -> QueryResult:
+        include_samples = arguments.get("include_sample_issues", True)
+        
+        issues = []
+        summary = {
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "issues_found": 0,
+        }
+        
+        # 1. Check for null values
+        null_counts = df.isnull().sum()
+        columns_with_nulls = null_counts[null_counts > 0]
+        if len(columns_with_nulls) > 0:
+            null_info = {
+                "issue_type": "null_values",
+                "severity": "warning",
+                "affected_columns": len(columns_with_nulls),
+                "details": {
+                    col: {"null_count": int(count), "null_percentage": round(count / len(df) * 100, 2)}
+                    for col, count in columns_with_nulls.items()
+                }
+            }
+            issues.append(null_info)
+            summary["issues_found"] += len(columns_with_nulls)
+        
+        # 2. Check for duplicate rows
+        duplicate_count = df.duplicated().sum()
+        if duplicate_count > 0:
+            dup_info = {
+                "issue_type": "duplicate_rows",
+                "severity": "warning",
+                "count": int(duplicate_count),
+                "percentage": round(duplicate_count / len(df) * 100, 2),
+            }
+            if include_samples:
+                # Get first duplicate
+                dup_mask = df.duplicated(keep=False)
+                sample_dup = df[dup_mask].head(1).to_dict(orient="records")
+                if sample_dup:
+                    dup_info["sample"] = {k: convert_to_native_type(v) for k, v in sample_dup[0].items()}
+            issues.append(dup_info)
+            summary["issues_found"] += 1
+        
+        # 3. Check for suspicious string values
+        suspicious_patterns = ["unknown", "n/a", "na", "null", "none", "undefined", "-", "?", ""]
+        suspicious_findings = {}
+        
+        for col in df.select_dtypes(include=["object"]).columns:
+            col_lower = df[col].astype(str).str.lower().str.strip()
+            suspicious_mask = col_lower.isin(suspicious_patterns)
+            suspicious_count = suspicious_mask.sum()
+            
+            if suspicious_count > 0:
+                suspicious_values = df[suspicious_mask][col].unique()[:5]
+                suspicious_findings[col] = {
+                    "count": int(suspicious_count),
+                    "percentage": round(suspicious_count / len(df) * 100, 2),
+                    "sample_values": [convert_to_native_type(v) for v in suspicious_values],
+                }
+        
+        if suspicious_findings:
+            issues.append({
+                "issue_type": "suspicious_values",
+                "severity": "info",
+                "description": "Values like 'Unknown', 'N/A', 'null' found",
+                "affected_columns": len(suspicious_findings),
+                "details": suspicious_findings,
+            })
+            summary["issues_found"] += len(suspicious_findings)
+        
+        # 4. Check for potential outliers in numeric columns (using IQR)
+        outlier_findings = {}
+        for col in df.select_dtypes(include=["number"]).columns:
+            col_data = df[col].dropna()
+            if len(col_data) < 10:
+                continue
+            
+            q1 = col_data.quantile(0.25)
+            q3 = col_data.quantile(0.75)
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+            
+            outliers = col_data[(col_data < lower_bound) | (col_data > upper_bound)]
+            if len(outliers) > 0:
+                outlier_findings[col] = {
+                    "count": int(len(outliers)),
+                    "percentage": round(len(outliers) / len(col_data) * 100, 2),
+                    "bounds": {
+                        "lower": convert_to_native_type(lower_bound),
+                        "upper": convert_to_native_type(upper_bound),
+                    },
+                    "min_value": convert_to_native_type(col_data.min()),
+                    "max_value": convert_to_native_type(col_data.max()),
+                }
+                if include_samples:
+                    outlier_findings[col]["sample_outliers"] = [
+                        convert_to_native_type(v) for v in outliers.head(3).tolist()
+                    ]
+        
+        if outlier_findings:
+            issues.append({
+                "issue_type": "potential_outliers",
+                "severity": "info",
+                "description": "Values outside 1.5*IQR range",
+                "affected_columns": len(outlier_findings),
+                "details": outlier_findings,
+            })
+            summary["issues_found"] += len(outlier_findings)
+        
+        # 5. Check for columns with very low cardinality (potential encoding issues)
+        low_cardinality = {}
+        for col in df.columns:
+            unique_count = df[col].nunique()
+            if unique_count == 1:
+                low_cardinality[col] = {
+                    "unique_values": 1,
+                    "note": "Column has only one unique value - might be useless",
+                    "value": convert_to_native_type(df[col].iloc[0]) if len(df) > 0 else None,
+                }
+            elif unique_count == 2 and df[col].dtype == "object":
+                values = df[col].unique().tolist()
+                low_cardinality[col] = {
+                    "unique_values": 2,
+                    "note": "Binary column - consider converting to boolean",
+                    "values": [convert_to_native_type(v) for v in values],
+                }
+        
+        if low_cardinality:
+            issues.append({
+                "issue_type": "low_cardinality",
+                "severity": "info",
+                "affected_columns": len(low_cardinality),
+                "details": low_cardinality,
+            })
+        
+        # 6. Check for mixed types in object columns
+        mixed_type_cols = {}
+        for col in df.select_dtypes(include=["object"]).columns:
+            # Check if column has numeric-like strings mixed with text
+            col_data = df[col].dropna()
+            if len(col_data) == 0:
+                continue
+            
+            numeric_count = col_data.apply(lambda x: str(x).replace(".", "").replace("-", "").isdigit()).sum()
+            if 0 < numeric_count < len(col_data) * 0.9 and numeric_count > len(col_data) * 0.1:
+                mixed_type_cols[col] = {
+                    "numeric_values": int(numeric_count),
+                    "non_numeric_values": int(len(col_data) - numeric_count),
+                    "note": "Column has mixed numeric and text values",
+                }
+        
+        if mixed_type_cols:
+            issues.append({
+                "issue_type": "mixed_types",
+                "severity": "warning",
+                "affected_columns": len(mixed_type_cols),
+                "details": mixed_type_cols,
+            })
+            summary["issues_found"] += len(mixed_type_cols)
+        
+        # Build quality score
+        if len(df) > 0:
+            null_rate = df.isnull().sum().sum() / (len(df) * len(df.columns))
+            dup_rate = duplicate_count / len(df)
+            quality_score = max(0, round((1 - null_rate - dup_rate) * 100, 1))
+        else:
+            quality_score = 0
+        
+        summary["quality_score"] = quality_score
+        summary["quality_rating"] = (
+            "Excellent" if quality_score >= 95 else
+            "Good" if quality_score >= 85 else
+            "Fair" if quality_score >= 70 else
+            "Needs Attention"
+        )
+        
+        return self._success(
+            summary=summary,
+            issues=issues,
+            recommendations=self._get_recommendations(issues),
+        )
+    
+    def _get_recommendations(self, issues: List[Dict]) -> List[str]:
+        """Generate actionable recommendations based on issues found."""
+        recommendations = []
+        
+        for issue in issues:
+            issue_type = issue.get("issue_type")
+            
+            if issue_type == "null_values":
+                recommendations.append("Consider filling null values with mean/median or dropping rows with nulls")
+            elif issue_type == "duplicate_rows":
+                recommendations.append("Consider removing duplicate rows with 'drop duplicates'")
+            elif issue_type == "suspicious_values":
+                recommendations.append("Review suspicious values like 'Unknown' or 'N/A' - they might need cleaning")
+            elif issue_type == "potential_outliers":
+                recommendations.append("Review potential outliers - they might be data entry errors or valid extremes")
+            elif issue_type == "mixed_types":
+                recommendations.append("Columns with mixed types may cause issues - consider converting to consistent type")
+        
+        if not recommendations:
+            recommendations.append("No major issues found - dataset looks clean!")
+        
+        return recommendations
