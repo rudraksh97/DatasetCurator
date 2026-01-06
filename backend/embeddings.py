@@ -243,3 +243,16 @@ async def has_embeddings(session: AsyncSession, dataset_id: str) -> bool:
         .limit(1)
     )
     return result.scalar() is not None
+
+
+async def delete_dataset_embeddings(session: AsyncSession, dataset_id: str) -> None:
+    """Delete all embeddings for a specific dataset.
+    
+    Args:
+        session: Database session.
+        dataset_id: ID of the dataset to delete embeddings for.
+    """
+    await session.execute(
+        delete(DatasetEmbedding).where(DatasetEmbedding.dataset_id == dataset_id)
+    )
+    await session.commit()

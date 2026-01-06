@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict
 
 import pandas as pd
+import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from db import get_session, AsyncSessionLocal
-from embeddings import embed_dataset
+from embeddings import embed_dataset, delete_dataset_embeddings
 from orchestrator.workflow import (
     CURATED_STORAGE,
     execute_transformation,
@@ -96,12 +97,15 @@ async def _preview_df(path: str, page: int = 1, page_size: int = 50) -> Dict[str
         HTTPException: If the file cannot be read.
     """
     storage = get_storage()
-    if not await storage.exists(path):
+    # Ensure path is string for S3 compatibility
+    path_str = str(path)
+    
+    if not await storage.exists(path_str):
         raise HTTPException(status_code=404, detail=f"Data file not found: {Path(path).name}")
     
     try:
         # Use storage abstraction to read CSV (handles both local and S3)
-        df = await storage.read_csv(path)
+        df = await storage.read_csv(path_str)
         
         total_rows = len(df)
         total_pages = (total_rows + page_size - 1) // page_size
@@ -165,6 +169,11 @@ async def upload_dataset(
         Dictionary with dataset info, preview data, and pagination metadata.
     """
     from orchestrator.workflow import process_upload
+    
+    # Generate unique dataset ID to prevent collisions
+    # Append short unique suffix (first 8 chars of uuid4)
+    unique_suffix = str(uuid.uuid4())[:8]
+    dataset_id = f"{dataset_id}_{unique_suffix}"
     
     storage = get_storage()
     
@@ -258,7 +267,7 @@ async def get_preview(
     storage = get_storage()
     try:
         # Read just the header
-        content = await storage.read_file(data_path)
+        content = await storage.read_file(str(data_path))
         import io
         df_header = pd.read_csv(io.BytesIO(content), nrows=0)
         column_count = len(df_header.columns)
@@ -606,3 +615,93 @@ async def chat(
         if state:
             await handler.save_history(state, user_msg, response, timestamp)
         return ChatResponse(user_message=user_msg, assistant_message=response)
+
+
+@router.delete("/dataset/{dataset_id}")
+async def delete_dataset(
+    dataset_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, str]:
+    """Delete a dataset and all associated resources.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        session: Database session.
+    
+    Returns:
+        Confirmation message.
+    
+    Raises:
+        HTTPException: If dataset is not found.
+    """
+    repo = DatasetRepository(session)
+    storage = get_storage()
+    
+    # 1. Get dataset state to find file paths
+    try:
+        state = await repo.get(dataset_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # 2. Delete main files from storage
+    files_to_delete = []
+    if state.raw_path:
+        files_to_delete.append(state.raw_path)
+    if state.curated_path:
+        files_to_delete.append(state.curated_path)
+        
+    # 3. Find and delete versioned files
+    # Note: list_files returns keys/paths relative to prefix if implemented that way,
+    # but delete_file expects what list_files returns usually.
+    # However, list_files(prefix) returns relative paths in our implementation?
+    # S3Storage.list_files returns keys relative to prefix.
+    # LocalStorage.list_files returns relative paths.
+    
+    # We should search for files starting with dataset_id in raw/ and curated/
+    # But currently S3Storage prefix is global for the bucket in my implementation logic?
+    # Let's check config.
+    
+    # S3Storage implementation:
+    # def list_files(self, prefix: str) -> List[str]:
+    #    ... returns filtered list ...
+    
+    # Simpler approach: Try to delete likely version files v1 to v20
+    # or rely on specific naming convention if possible.
+    
+    # Better: list files in curated prefix and find matches
+    if settings.storage.is_s3:
+        curated_prefix = settings.storage.curated_prefix
+        try:
+            curated_files = await storage.list_files(curated_prefix)
+            for file in curated_files:
+                if f"/{dataset_id}_v" in f"/{file}" or file.startswith(f"{dataset_id}_v"):
+                     # Reconstruct full path for deletion if needed?
+                     # storage.list_files returns keys (minus global prefix).
+                     # storage.delete_file expects same key format?
+                     # Yes, both use _get_key internally.
+                     files_to_delete.append(file)
+        except Exception as e:
+            print(f"[Delete] Error listing files for cleanup: {e}")
+    else:
+        # Local storage cleanup
+        # storage/curated is usually where versions are
+        # But storage.list_files might be tricky with directories.
+        # Let's iterate versions based on current_version in state to be safe/efficient
+        for v in range(1, state.current_version + 1):
+             files_to_delete.append(f"curated/{dataset_id}_v{v}.csv")
+
+    # Execute file deletions
+    for file_path in files_to_delete:
+        try:
+            await storage.delete_file(str(file_path))
+        except Exception as e:
+            print(f"[Delete] Failed to delete file {file_path}: {e}")
+
+    # 4. Delete embeddings
+    await delete_dataset_embeddings(session, dataset_id)
+    
+    # 5. Delete dataset record (cascades to chat history if stored in JSON or relations)
+    # DatasetState stores chat_history in JSON column, so deleting record deletes history.
+    await repo.delete(dataset_id)
+    
+    return {"message": f"Dataset {dataset_id} and all associated data deleted successfully"}
