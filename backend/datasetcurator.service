@@ -1,0 +1,14 @@
+[Unit]
+Description=Dataset Curator Backend
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/project/backend
+EnvironmentFile=/home/ubuntu/project/backend/.env
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
