@@ -60,11 +60,11 @@ export default function Home() {
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing || !containerRef.current) return;
-      
+
       const container = containerRef.current;
       const rect = container.getBoundingClientRect();
       const newWidth = ((e.clientX - rect.left) / rect.width) * 100;
-      
+
       // Clamp between 25% and 65%
       if (newWidth >= 25 && newWidth <= 65) {
         setChatWidth(newWidth);
@@ -143,10 +143,10 @@ export default function Home() {
     } else {
       setMessages([WELCOME_MESSAGE]);
     }
-    
+
     setDatasetId(sessionId);
     setActiveSession(sessionId);
-    
+
     // Fetch preview from backend
     try {
       const data = await getPreview(sessionId, 1, 50);
@@ -187,7 +187,7 @@ export default function Home() {
 
   const handlePageChange = async (newPage: number) => {
     if (!datasetId || newPage < 1 || newPage > totalPages) return;
-    
+
     try {
       const data = await getPreview(datasetId, newPage, 50);
       if (data) {
@@ -241,13 +241,13 @@ export default function Home() {
   };
 
   const addMessage = (role: "user" | "assistant", content: string, id?: string) => {
-    const newMessage: ChatMessage = { 
-      id: id || Date.now().toString(), 
-      role, 
-      content, 
-      timestamp: new Date() 
+    const newMessage: ChatMessage = {
+      id: id || Date.now().toString(),
+      role,
+      content,
+      timestamp: new Date()
     };
-    
+
     setMessages((prev: ChatMessage[]) => {
       const updated = [...prev, newMessage];
       if (datasetId) {
@@ -257,29 +257,35 @@ export default function Home() {
       }
       return updated;
     });
-    
+
     return newMessage.id;
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
     if (!selectedFile) return;
-    
+
     // Auto-generate dataset ID from filename
     const autoId = selectedFile.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
     setDatasetId(autoId);
     setActiveSession(autoId);
-    
+
     // Show upload message
     addMessage("user", `Uploaded: ${selectedFile.name}`);
-    
+
     setIsProcessing(true);
     addMessage("assistant", "Processing your dataset...");
 
     try {
       const res = (await uploadDataset(autoId, selectedFile)) as UploadResponse;
+      const finalId = res.dataset_id;
+
+      // Update state to use the unique ID from backend
+      setDatasetId(finalId);
+      setActiveSession(finalId);
+
       const newPreview = res.preview || [];
-      
+
       setPreview(newPreview);
       setCurrentPage(res.page || 1);
       setTotalPages(res.total_pages || 1);
@@ -298,15 +304,15 @@ export default function Home() {
       summary += `- Say **'download'** to get the file`;
 
       addMessage("assistant", summary);
-      
-      // Save to localStorage for sidebar
-      localStorage.setItem(`chat_history_${autoId}`, JSON.stringify([
+
+      // Save to localStorage using the new unique ID
+      localStorage.setItem(`chat_history_${finalId}`, JSON.stringify([
         WELCOME_MESSAGE,
         { id: Date.now().toString(), role: "user", content: `Uploaded: ${selectedFile.name}`, timestamp: new Date() },
         { id: (Date.now() + 1).toString(), role: "assistant", content: summary, timestamp: new Date() },
       ]));
       window.dispatchEvent(new Event("storage"));
-      
+
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       addMessage("assistant", `Error processing dataset: ${errorMessage}`);
@@ -408,7 +414,7 @@ export default function Home() {
 
     const msg = inputMessage.trim();
     const lowerMsg = msg.toLowerCase();
-    
+
     addMessage("user", msg);
     setInputMessage("");
 
@@ -417,7 +423,7 @@ export default function Home() {
       fileInputRef.current?.click();
       return;
     }
-    
+
     if (lowerMsg.includes("download") && preview.length > 0) {
       handleDownload();
       return;
@@ -439,8 +445,8 @@ export default function Home() {
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
       />
-      <button 
-        className="toggle-sidebar" 
+      <button
+        className="toggle-sidebar"
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
         title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
       >
@@ -449,261 +455,261 @@ export default function Home() {
       <main className="app-main" ref={containerRef}>
         {/* Left: Chat Interface */}
         <div className="chat-panel" style={{ flex: `0 0 ${chatWidth}%` }}>
-        <div className="chat-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-            <h1>Dataset Curator</h1>
-            <Badge variant={isProcessing ? "warning" : preview.length ? "success" : "default"}>
-              {isProcessing ? "Processing..." : preview.length ? "Ready" : "Idle"}
-            </Badge>
+          <div className="chat-header">
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+              <h1>Dataset Curator</h1>
+              <Badge variant={isProcessing ? "warning" : preview.length ? "success" : "default"}>
+                {isProcessing ? "Processing..." : preview.length ? "Ready" : "Idle"}
+              </Badge>
+            </div>
+            <div className="llm-select">
+              <label htmlFor="llm-model">Model</label>
+              <select
+                id="llm-model"
+                value={llmModel}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setLlmModel(value);
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("llm_model", value);
+                  }
+                }}
+              >
+                {(availableModels.length ? availableModels : [{
+                  id: DEFAULT_LLM_MODEL,
+                  name: "Llama 3.3 70B (free)",
+                  provider: "meta",
+                }]).map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="llm-select">
-            <label htmlFor="llm-model">Model</label>
-            <select
-              id="llm-model"
-              value={llmModel}
-              onChange={(e) => {
-                const value = e.target.value;
-                setLlmModel(value);
-                if (typeof window !== "undefined") {
-                  window.localStorage.setItem("llm_model", value);
-                }
-              }}
-            >
-              {(availableModels.length ? availableModels : [{
-                id: DEFAULT_LLM_MODEL,
-                name: "Llama 3.3 70B (free)",
-                provider: "meta",
-              }]).map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
 
-        <ScrollArea className="chat-messages">
-          {messages.map((msg: ChatMessage, index: number) => {
-            // Check if this is a successful transformation (not analysis-only)
-            const isTransformResult = msg.role === "assistant" && 
-              msg.content.includes("**Executed") && 
-              msg.content.includes("steps completed") &&
-              !msg.content.includes("analysis-only");
-            const requiresApproval = msg.role === "assistant" &&
-              msg.content.includes("Approval required");
+          <ScrollArea className="chat-messages">
+            {messages.map((msg: ChatMessage, index: number) => {
+              // Check if this is a successful transformation (not analysis-only)
+              const isTransformResult = msg.role === "assistant" &&
+                msg.content.includes("**Executed") &&
+                msg.content.includes("steps completed") &&
+                !msg.content.includes("analysis-only");
+              const requiresApproval = msg.role === "assistant" &&
+                msg.content.includes("Approval required");
 
-            const previousMessages = messages.slice(0, index).reverse();
-            const lastUserMessage = previousMessages.find((m) => m.role === "user");
-            
-            return (
-              <div key={msg.id} className={`chat-message ${msg.role}`}>
-                <Avatar>
-                  <AvatarFallback>{msg.role === "user" ? Icons.user : Icons.bot}</AvatarFallback>
-                </Avatar>
-                <div className="message-content">
-                  <div className="message-header">
-                    <span className="message-role">{msg.role === "user" ? "You" : "Curator Agent"}</span>
-                    <span className="message-time">
-                      {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                  </div>
-                  <div className="message-text">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                  </div>
-                  {(isTransformResult || requiresApproval) && datasetId && (
-                    <div className="message-actions">
-                      {isTransformResult && (
-                        <Button 
-                          size="sm" 
-                          variant="outline" 
-                          onClick={() => downloadCuratedFile(datasetId)}
-                          className="download-result-btn"
-                        >
-                          {Icons.download}
-                          <span>Download Result</span>
-                        </Button>
-                      )}
-                      {requiresApproval && lastUserMessage && (
-                        <>
+              const previousMessages = messages.slice(0, index).reverse();
+              const lastUserMessage = previousMessages.find((m) => m.role === "user");
+
+              return (
+                <div key={msg.id} className={`chat-message ${msg.role}`}>
+                  <Avatar>
+                    <AvatarFallback>{msg.role === "user" ? Icons.user : Icons.bot}</AvatarFallback>
+                  </Avatar>
+                  <div className="message-content">
+                    <div className="message-header">
+                      <span className="message-role">{msg.role === "user" ? "You" : "Curator Agent"}</span>
+                      <span className="message-time">
+                        {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                    <div className="message-text">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    </div>
+                    {(isTransformResult || requiresApproval) && datasetId && (
+                      <div className="message-actions">
+                        {isTransformResult && (
                           <Button
                             size="sm"
                             variant="outline"
-                            disabled={isProcessing}
-                            onClick={() => runApprovedMessage(lastUserMessage.content)}
+                            onClick={() => downloadCuratedFile(datasetId)}
+                            className="download-result-btn"
                           >
-                            ✅ Approve change
+                            {Icons.download}
+                            <span>Download Result</span>
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={isProcessing}
-                            onClick={() => {
-                              addMessage("assistant", "Approval not granted. The destructive operation was cancelled.");
-                            }}
-                          >
-                            Cancel
-                          </Button>
-                        </>
-                      )}
-                    </div>
-                  )}
+                        )}
+                        {requiresApproval && lastUserMessage && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isProcessing}
+                              onClick={() => runApprovedMessage(lastUserMessage.content)}
+                            >
+                              ✅ Approve change
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={isProcessing}
+                              onClick={() => {
+                                addMessage("assistant", "Approval not granted. The destructive operation was cancelled.");
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-          <div ref={messagesEndRef} />
-        </ScrollArea>
+              );
+            })}
+            <div ref={messagesEndRef} />
+          </ScrollArea>
 
-        <div className="chat-input-area">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.json,.parquet"
-            onChange={handleFileSelect}
-            style={{ display: "none" }}
-          />
-          <form onSubmit={handleSendMessage} className="message-form">
-            <button
-              type="button"
-              className="attach-button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isProcessing}
-              title="Upload CSV file"
-            >
-              {Icons.paperclip}
-            </button>
-            <Input
-              type="text"
-              placeholder={isProcessing ? "Processing..." : "Ask anything or upload a CSV..."}
-              value={inputMessage}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
+          <div className="chat-input-area">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.json,.parquet"
+              onChange={handleFileSelect}
+              style={{ display: "none" }}
             />
-            {preview.length > 0 && (
+            <form onSubmit={handleSendMessage} className="message-form">
               <button
                 type="button"
-                className="download-button"
-                onClick={handleDownload}
-                disabled={isProcessing}
-                title="Download processed data"
+                className="attach-button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isProcessing || !!datasetId}
+                title="Upload CSV file"
               >
-                {Icons.download}
+                {Icons.paperclip}
               </button>
-            )}
-            <Button type="submit" disabled={!inputMessage.trim()}>
-              {Icons.send}
-            </Button>
-          </form>
-        </div>
-      </div>
-
-      {/* Resize Handle */}
-      <div 
-        className={`resize-handle ${isResizing ? "dragging" : ""}`}
-        onMouseDown={handleMouseDown}
-      />
-
-      {/* Right: Data Preview */}
-      <div className="data-panel" style={{ flex: `1 1 ${100 - chatWidth}%` }}>
-        <Card>
-          <div className="data-header">
-            <h2>Data Preview</h2>
-            {preview.length > 0 && (
-              <div className="data-stats">
-                <Badge variant="secondary">{preview[0] ? Object.keys(preview[0]).length : 0} columns</Badge>
-                <Badge variant="secondary">{totalRows || preview.length} rows</Badge>
-                {totalPages > 1 && (
-                  <Badge variant="secondary">Page {currentPage} of {totalPages}</Badge>
-                )}
-              </div>
-            )}
+              <Input
+                type="text"
+                placeholder={isProcessing ? "Processing..." : "Ask anything or upload a CSV..."}
+                value={inputMessage}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
+              />
+              {preview.length > 0 && (
+                <button
+                  type="button"
+                  className="download-button"
+                  onClick={handleDownload}
+                  disabled={isProcessing}
+                  title="Download processed data"
+                >
+                  {Icons.download}
+                </button>
+              )}
+              <Button type="submit" disabled={!inputMessage.trim()}>
+                {Icons.send}
+              </Button>
+            </form>
           </div>
-          {/* Quick chips */}
-          {preview.length > 0 && (
-            <div className="quick-actions">
-              <span className="quick-label">Try:</span>
-              <div className="chips">
-                <Button size="sm" variant="outline" onClick={() => quickAsk("Count rows")}>Row count</Button>
-                <Button size="sm" variant="outline" onClick={() => quickAsk("List columns")}>List columns</Button>
-                <Button size="sm" variant="outline" onClick={() => quickAsk("Group by course and count")}>Count by course</Button>
-                <Button size="sm" variant="outline" onClick={() => quickAsk("Average study_hours by course")}>Avg study_hours by course</Button>
-                <Button size="sm" variant="outline" onClick={() => quickAsk("Show missing values summary")}>Missing values</Button>
-              </div>
-            </div>
-          )}
-          {/* Column chips */}
-          {preview.length > 0 && (
-            <div className="columns-bar">
-              {Object.keys(preview[0]).map((col) => (
-                <Badge key={col} variant="secondary" className="column-chip">{col}</Badge>
-              ))}
-            </div>
-          )}
-          {preview.length > 0 ? (
-            <>
-              <ScrollArea className="table-scroll">
-                <Table>
-                  <THead>
-                    <TR>
-                      {Object.keys(preview[0]).map((col: string) => (
-                        <TH key={col} className="sticky-th">{col}</TH>
-                      ))}
-                    </TR>
-                  </THead>
-                  <TBody>
-                    {preview.map((row: Record<string, unknown>, idx: number) => (
-                      <TR key={idx}>
-                        {Object.entries(row).map(([col, val]: [string, unknown]) => (
-                          <TD
-                            key={col}
-                            className={typeof val === "number" || (!isNaN(Number(val)) && val !== null && val !== "") ? "num-cell" : ""}
-                          >
-                            {val === null || val === "" ? <span className="null-value">null</span> : String(val)}
-                          </TD>
-                        ))}
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              </ScrollArea>
-              
-              {totalPages > 1 && (
-                <div className="pagination-controls" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e5e7eb" }}>
-                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handlePageChange(currentPage - 1)}
-                      disabled={currentPage === 1}
-                    >
-                      Previous
-                    </Button>
-                    <span style={{ fontSize: "0.875rem", color: "#6b7280" }}>
-                      Page {currentPage} of {totalPages}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handlePageChange(currentPage + 1)}
-                      disabled={currentPage === totalPages}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                  <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
-                    Showing {((currentPage - 1) * 50) + 1} - {Math.min(currentPage * 50, totalRows)} of {totalRows} rows
-                  </div>
+        </div>
+
+        {/* Resize Handle */}
+        <div
+          className={`resize-handle ${isResizing ? "dragging" : ""}`}
+          onMouseDown={handleMouseDown}
+        />
+
+        {/* Right: Data Preview */}
+        <div className="data-panel" style={{ flex: `1 1 ${100 - chatWidth}%` }}>
+          <Card>
+            <div className="data-header">
+              <h2>Data Preview</h2>
+              {preview.length > 0 && (
+                <div className="data-stats">
+                  <Badge variant="secondary">{preview[0] ? Object.keys(preview[0]).length : 0} columns</Badge>
+                  <Badge variant="secondary">{totalRows || preview.length} rows</Badge>
+                  {totalPages > 1 && (
+                    <Badge variant="secondary">Page {currentPage} of {totalPages}</Badge>
+                  )}
                 </div>
               )}
-            </>
-          ) : (
-            <div className="empty-state">
-              <div className="empty-icon">{Icons.barChart}</div>
-              <h3>No data yet</h3>
-              <p>Upload and process a CSV file to see a preview here.</p>
             </div>
-          )}
-        </Card>
-      </div>
+            {/* Quick chips */}
+            {preview.length > 0 && (
+              <div className="quick-actions">
+                <span className="quick-label">Try:</span>
+                <div className="chips">
+                  <Button size="sm" variant="outline" onClick={() => quickAsk("Count rows")}>Row count</Button>
+                  <Button size="sm" variant="outline" onClick={() => quickAsk("List columns")}>List columns</Button>
+                  <Button size="sm" variant="outline" onClick={() => quickAsk("Group by course and count")}>Count by course</Button>
+                  <Button size="sm" variant="outline" onClick={() => quickAsk("Average study_hours by course")}>Avg study_hours by course</Button>
+                  <Button size="sm" variant="outline" onClick={() => quickAsk("Show missing values summary")}>Missing values</Button>
+                </div>
+              </div>
+            )}
+            {/* Column chips */}
+            {preview.length > 0 && (
+              <div className="columns-bar">
+                {Object.keys(preview[0]).map((col) => (
+                  <Badge key={col} variant="secondary" className="column-chip">{col}</Badge>
+                ))}
+              </div>
+            )}
+            {preview.length > 0 ? (
+              <>
+                <ScrollArea className="table-scroll">
+                  <Table>
+                    <THead>
+                      <TR>
+                        {Object.keys(preview[0]).map((col: string) => (
+                          <TH key={col} className="sticky-th">{col}</TH>
+                        ))}
+                      </TR>
+                    </THead>
+                    <TBody>
+                      {preview.map((row: Record<string, unknown>, idx: number) => (
+                        <TR key={idx}>
+                          {Object.entries(row).map(([col, val]: [string, unknown]) => (
+                            <TD
+                              key={col}
+                              className={typeof val === "number" || (!isNaN(Number(val)) && val !== null && val !== "") ? "num-cell" : ""}
+                            >
+                              {val === null || val === "" ? <span className="null-value">null</span> : String(val)}
+                            </TD>
+                          ))}
+                        </TR>
+                      ))}
+                    </TBody>
+                  </Table>
+                </ScrollArea>
+
+                {totalPages > 1 && (
+                  <div className="pagination-controls" style={{ padding: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: "1px solid #e5e7eb" }}>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePageChange(currentPage - 1)}
+                        disabled={currentPage === 1}
+                      >
+                        Previous
+                      </Button>
+                      <span style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                        Page {currentPage} of {totalPages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePageChange(currentPage + 1)}
+                        disabled={currentPage === totalPages}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                    <div style={{ fontSize: "0.875rem", color: "#6b7280" }}>
+                      Showing {((currentPage - 1) * 50) + 1} - {Math.min(currentPage * 50, totalRows)} of {totalRows} rows
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="empty-state">
+                <div className="empty-icon">{Icons.barChart}</div>
+                <h3>No data yet</h3>
+                <p>Upload and process a CSV file to see a preview here.</p>
+              </div>
+            )}
+          </Card>
+        </div>
       </main>
     </div>
   );
