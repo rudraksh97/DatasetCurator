@@ -63,9 +63,9 @@ Dataset Curator enables non-technical users to clean and transform CSV datasets 
 All `/chat` requests pass through a two-stage classifier:
 
 ```
-User Message
-     │
-     ▼
+          User Message
+               │
+               ▼
 ┌─────────────────────────────┐
 │    Intent Classifier        │
 │    (transform | query)      │
@@ -188,6 +188,7 @@ All transformations map to canonical primitives:
 | | `strip_whitespace` | `map_rows` | Trim leading/trailing whitespace |
 | | `replace_values` | `map_rows` | Find and replace values |
 | **Column Ops** | `drop_column` | `drop_columns` | Remove single column |
+| | `drop_columns` | `drop_columns` | Remove multiple columns |
 | | `keep_columns` | `select_columns` | Keep only specified columns |
 | | `rename_column` | `rename_columns` | Rename column |
 | | `add_column` | `add_column` | Add static/computed column |
