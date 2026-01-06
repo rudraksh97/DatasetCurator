@@ -162,27 +162,121 @@ body {
   left: 8px;
 }
 
+/* Mobile/Tablet Styles */
 @media (max-width: 1000px) {
+  /* Sidebar becomes a drawer/overlay */
   .app-layout {
-    flex-direction: column;
+    position: relative;
   }
+
   .sidebar {
-    width: 100% !important;
-    max-height: 200px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 50;
+    height: 100%;
+    width: 280px;
+    max-width: 80%;
+    box-shadow: var(--shadow-lg);
+    transform: translateX(0);
   }
+
+  .app-layout.sidebar-collapsed .sidebar {
+    transform: translateX(-100%);
+    width: 280px; /* Keep width for animation, just move it */
+  }
+
+  /* Overlay backing for sidebar */
+  .sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 40;
+    opacity: 1;
+    transition: opacity 0.2s;
+  }
+  
+  .app-layout.sidebar-collapsed .sidebar-overlay {
+    display: none;
+    pointer-events: none;
+    opacity: 0;
+  }
+
   .app-main {
     flex-direction: column;
+    padding: 0;
+    height: 100dvh; /* Use dynamic viewport height */
+    overflow: hidden;
   }
+
+  /* Panels take full space in tab view */
   .chat-panel, .data-panel {
     flex: 1;
+    width: 100%;
     max-width: 100%;
-    min-width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 0;
   }
+
   .resize-handle {
     display: none;
   }
+
+  /* Toggle sidebar button position for mobile */
   .toggle-sidebar {
-    display: none;
+    top: 12px;
+    left: 12px;
+    background: white; /* Ensure visibility */
+  }
+  
+  .app-layout.sidebar-collapsed .toggle-sidebar {
+    left: 12px;
+  }
+
+  /* Hide one panel based on active tab (handled by utility classes or React) */
+  .hidden-mobile {
+    display: none !important;
+  }
+}
+
+/* Mobile Tab Navigation */
+.mobile-tab-nav {
+  display: none; /* Hidden on desktop */
+}
+
+@media (max-width: 1000px) {
+  .mobile-tab-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .mobile-tab-btn {
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .mobile-tab-btn.active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border);
+    font-weight: 600;
   }
 }
 

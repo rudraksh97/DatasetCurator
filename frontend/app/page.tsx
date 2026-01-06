@@ -46,6 +46,7 @@ export default function Home() {
   const [isResizing, setIsResizing] = useState(false);
   const [pendingQueue, setPendingQueue] = useState<string[]>([]);
   const [llmModel, setLlmModel] = useState<string>(DEFAULT_LLM_MODEL);
+  const [activeMobileTab, setActiveMobileTab] = useState<"chat" | "data">("chat");
   const [availableModels, setAvailableModels] = useState<LlmModel[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -97,6 +98,13 @@ export default function Home() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Auto-collapse sidebar on mobile
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.innerWidth < 1000) {
+      setSidebarCollapsed(true);
+    }
+  }, []);
 
   // Load saved LLM model preference and available models
   useEffect(() => {
@@ -452,9 +460,35 @@ export default function Home() {
       >
         {sidebarCollapsed ? Icons.chevronRight : Icons.chevronLeft}
       </button>
+
+      {/* Mobile Sidebar Overlay */}
+      {!sidebarCollapsed && (
+        <div
+          className="sidebar-overlay"
+          onClick={() => setSidebarCollapsed(true)}
+        />
+      )}
+
       <main className="app-main" ref={containerRef}>
+        {/* Mobile Tab Navigation */}
+        <div className="mobile-tab-nav">
+          <button
+            className={`mobile-tab-btn ${activeMobileTab === "chat" ? "active" : ""}`}
+            onClick={() => setActiveMobileTab("chat")}
+          >
+            Chat
+          </button>
+          <button
+            className={`mobile-tab-btn ${activeMobileTab === "data" ? "active" : ""}`}
+            onClick={() => setActiveMobileTab("data")}
+          >
+            Data Preview
+            {preview.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7 }}>({preview.length})</span>}
+          </button>
+        </div>
+
         {/* Left: Chat Interface */}
-        <div className="chat-panel" style={{ flex: `0 0 ${chatWidth}%` }}>
+        <div className={`chat-panel ${activeMobileTab === "data" ? "hidden-mobile" : ""}`} style={{ flex: `0 0 ${chatWidth}%` }}>
           <div className="chat-header">
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
               <h1>Dataset Curator</h1>
@@ -609,7 +643,7 @@ export default function Home() {
         />
 
         {/* Right: Data Preview */}
-        <div className="data-panel" style={{ flex: `1 1 ${100 - chatWidth}%` }}>
+        <div className={`data-panel ${activeMobileTab === "chat" ? "hidden-mobile" : ""}`} style={{ flex: `1 1 ${100 - chatWidth}%` }}>
           <Card>
             <div className="data-header">
               <h2>Data Preview</h2>
