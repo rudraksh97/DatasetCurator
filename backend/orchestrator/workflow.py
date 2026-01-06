@@ -400,6 +400,26 @@ def finalize_node(state: TransformationState) -> TransformationState:
     is_analysis = state.get("is_analysis", False)
     analysis_df = state.get("analysis_df")
     
+    # If approval is required but not granted, short-circuit with a clear message
+    if state.get("needs_approval") and not state.get("approval_granted"):
+        idx = state.get("current_step_idx", 0)
+        step = state["steps"][idx] if idx < len(state["steps"]) else {}
+        step_num = step.get("step", idx + 1)
+        description = step.get("description", "destructive operation")
+        op = step.get("operation", "unknown")
+        msg = (
+            f"⚠️ **Approval required** before executing step {step_num} "
+            f"(`{op}`): {description}.\n\n"
+            "This operation may delete or modify a large number of rows. "
+            "Use the **Approve change** button in the UI to continue, or ignore this "
+            "message to cancel."
+        )
+        return {
+            **state,
+            "final_message": msg,
+            "success": False,
+        }
+    
     # Use analysis_df for reporting if in analysis mode, otherwise use df
     result_df = analysis_df if is_analysis and analysis_df is not None else df
     
@@ -453,6 +473,11 @@ def finalize_node(state: TransformationState) -> TransformationState:
 
 def should_retry_or_continue(state: TransformationState) -> Literal["retry", "continue", "finalize"]:
     """Decide whether to retry, continue, or finish."""
+    # If no steps were generated or all steps done, finalize
+    if not state["steps"] or state["current_step_idx"] >= len(state["steps"]):
+        return "finalize"
+    
+    # If no results yet but we have steps, continue to execute
     if not state["results"]:
         return "continue"
     
@@ -474,8 +499,12 @@ def should_retry_or_continue(state: TransformationState) -> Literal["retry", "co
     return "continue"
 
 
-def needs_approval_check(state: TransformationState) -> Literal["wait_approval", "execute"]:
-    """Check if we need approval."""
+def needs_approval_check(state: TransformationState) -> Literal["wait_approval", "execute", "finalize"]:
+    """Check if we need approval or if we should finalize."""
+    # If no steps or all steps done, go to finalize
+    if not state["steps"] or state["current_step_idx"] >= len(state["steps"]):
+        return "finalize"
+    
     if state["needs_approval"] and not state["approval_granted"]:
         return "wait_approval"
     return "execute"
@@ -507,7 +536,7 @@ def create_transformation_graph() -> StateGraph:
     graph.add_conditional_edges(
         "check_approval",
         needs_approval_check,
-        {"execute": "execute_step", "wait_approval": "finalize"}
+        {"execute": "execute_step", "wait_approval": "finalize", "finalize": "finalize"}
     )
     
     graph.add_edge("execute_step", "validate")
@@ -532,7 +561,8 @@ async def execute_transformation(
     data_path: str,
     columns: List[str],
     max_retries: int = 1,
-) -> tuple[bool, str, Optional[pd.DataFrame]]:
+    approval_granted: bool = False,
+) -> tuple[bool, str, Optional[pd.DataFrame], bool, bool]:
     """Execute transformation workflow and return result.
     
     Args:
@@ -557,7 +587,7 @@ async def execute_transformation(
         "analysis_df": None,
         "results": [],
         "needs_approval": False,
-        "approval_granted": True,
+        "approval_granted": approval_granted,
         "error_message": "",
         "max_retries": max_retries,
         "final_message": "",
@@ -568,6 +598,7 @@ async def execute_transformation(
     
     # Return analysis_df for preview if in analysis mode, otherwise return df
     is_analysis = final_state.get("is_analysis", False)
+    steps = final_state.get("steps", [])
     result_df = final_state.get("analysis_df") if is_analysis else final_state["df"]
     
     # For analysis mode, include both for the handler to decide
@@ -575,5 +606,5 @@ async def execute_transformation(
         final_state["success"],
         final_state["final_message"],
         result_df if result_df is not None else final_state["df"],
-        is_analysis,
+        is_analysis
     )

@@ -9,10 +9,54 @@ import json
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError, APIError
 
 from config import settings
 from protocols import Message
+
+
+class LLMRateLimitError(Exception):
+    """Raised when the LLM API rate limit is exceeded."""
+    pass
+
+
+class LLMAPIError(Exception):
+    """Raised when the LLM API returns an error."""
+    pass
+
+
+# Static list of known free models on OpenRouter that work well with this app.
+# These IDs must match OpenRouter's model identifiers.
+FREE_LLM_MODELS: List[Dict[str, Any]] = [
+    {
+        "id": "meta-llama/llama-3.3-70b-instruct:free",
+        "name": "Llama 3.3 70B (free)",
+        "provider": "meta",
+        "context_length": 128_000,
+        "is_default": True,
+    },
+    {
+        "id": "mistralai/mistral-7b-instruct:free",
+        "name": "Mistral 7B Instruct (free)",
+        "provider": "mistral",
+        "context_length": 32_000,
+        "is_default": False,
+    },
+    {
+        "id": "deepseek/deepseek-r1-0528:free",
+        "name": "DeepSeek R1 0528 (free)",
+        "provider": "deepseek",
+        "context_length": 163_840,
+        "is_default": False,
+    },
+    {
+        "id": "minimax/minimax-m2:free",
+        "name": "MiniMax M2 (free)",
+        "provider": "minimax",
+        "context_length": 204_800,
+        "is_default": False,
+    },
+]
 
 
 def _parse_json_response(response: str) -> Optional[Dict[str, Any]]:
@@ -90,14 +134,26 @@ class OpenRouterClient:
         
         Returns:
             The model's response text.
+        
+        Raises:
+            LLMRateLimitError: If rate limit is exceeded.
+            LLMAPIError: If the API returns an error.
         """
-        response = await self._client.chat.completions.create(
-            model=model or self._default_model,
-            messages=list(messages),
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = await self._client.chat.completions.create(
+                model=model or self._default_model,
+                messages=list(messages),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content or ""
+        except RateLimitError as e:
+            raise LLMRateLimitError(
+                "⏳ **Rate limit exceeded.** The AI service is temporarily unavailable. "
+                "Please wait a moment and try again."
+            ) from e
+        except APIError as e:
+            raise LLMAPIError(f"AI service error: {str(e)}") from e
     
     async def complete_with_tools(
         self,
@@ -118,17 +174,29 @@ class OpenRouterClient:
         
         Returns:
             The API response object with potential tool calls.
+        
+        Raises:
+            LLMRateLimitError: If rate limit is exceeded.
+            LLMAPIError: If the API returns an error.
         """
-        response = await self._client.chat.completions.create(
-            model=model or self._default_model,
-            messages=list(messages),
-            tools=tools,
-            tool_choice="auto",
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
-        return response
+        try:
+            response = await self._client.chat.completions.create(
+                model=model or self._default_model,
+                messages=list(messages),
+                tools=tools,
+                tool_choice="auto",
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+            )
+            return response
+        except RateLimitError as e:
+            raise LLMRateLimitError(
+                "⏳ **Rate limit exceeded.** The AI service is temporarily unavailable. "
+                "Please wait a moment and try again."
+            ) from e
+        except APIError as e:
+            raise LLMAPIError(f"AI service error: {str(e)}") from e
     
     def parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
         """Parse a JSON response from the LLM.

@@ -31,3 +31,18 @@ export interface ChatResponse {
   user_message: string;
   assistant_message: string;
 }
+
+/** LLM model metadata returned from the backend. */
+export interface LlmModel {
+  id: string;
+  name: string;
+  provider: string;
+  context_length?: number;
+  is_default?: boolean;
+}
+
+/** Response from the LLM models endpoint. */
+export interface LlmModelsResponse {
+  default_model: string;
+  models: LlmModel[];
+}

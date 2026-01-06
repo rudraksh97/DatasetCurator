@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { downloadCuratedFile, uploadDataset, sendChatMessage, getPreview } from "@/lib/api";
-import type { UploadResponse } from "@/types/api";
+import { downloadCuratedFile, uploadDataset, sendChatMessage, getPreview, getLlmModels } from "@/lib/api";
+import type { UploadResponse, LlmModel } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,6 +29,8 @@ const WELCOME_MESSAGE: ChatMessage = {
   timestamp: new Date(),
 };
 
+const DEFAULT_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+
 export default function Home() {
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<UploadResponse["preview"]>([]);
@@ -40,9 +42,11 @@ export default function Home() {
   const [inputMessage, setInputMessage] = useState("");
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [chatWidth, setChatWidth] = useState(50);
+  const [chatWidth, setChatWidth] = useState(40);
   const [isResizing, setIsResizing] = useState(false);
   const [pendingQueue, setPendingQueue] = useState<string[]>([]);
+  const [llmModel, setLlmModel] = useState<string>(DEFAULT_LLM_MODEL);
+  const [availableModels, setAvailableModels] = useState<LlmModel[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -61,8 +65,8 @@ export default function Home() {
       const rect = container.getBoundingClientRect();
       const newWidth = ((e.clientX - rect.left) / rect.width) * 100;
       
-      // Clamp between 30% and 70%
-      if (newWidth >= 30 && newWidth <= 70) {
+      // Clamp between 25% and 65%
+      if (newWidth >= 25 && newWidth <= 65) {
         setChatWidth(newWidth);
       }
     };
@@ -93,6 +97,36 @@ export default function Home() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Load saved LLM model preference and available models
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("llm_model");
+    if (saved) {
+      setLlmModel(saved);
+    }
+    (async () => {
+      try {
+        const data = await getLlmModels();
+        setAvailableModels(data.models || []);
+        // If we don't already have a saved model, use backend default
+        if (!saved && data.default_model) {
+          setLlmModel(data.default_model);
+          window.localStorage.setItem("llm_model", data.default_model);
+        }
+      } catch (e) {
+        console.error("Failed to load LLM models", e);
+        setAvailableModels([
+          {
+            id: DEFAULT_LLM_MODEL,
+            name: "Llama 3.3 70B (free)",
+            provider: "meta",
+            is_default: true,
+          },
+        ]);
+      }
+    })();
+  }, []);
 
   // Load chat history and data preview when session changes
   const loadSession = useCallback(async (sessionId: string) => {
@@ -184,7 +218,7 @@ export default function Home() {
     addMessage("user", prompt);
     setIsProcessing(true);
     try {
-      const response = await sendChatMessage(sessionId, prompt);
+      const response = await sendChatMessage(sessionId, prompt, llmModel);
       addMessage("assistant", response.assistant_message);
       // Refresh preview
       try {
@@ -308,7 +342,7 @@ export default function Home() {
       const sessionId = ensureSession();
       setIsProcessing(true);
       try {
-        const response = await sendChatMessage(sessionId, msg);
+        const response = await sendChatMessage(sessionId, msg, llmModel);
         addMessage("assistant", response.assistant_message);
         try {
           const data = await getPreview(sessionId, currentPage, 50);
@@ -328,7 +362,35 @@ export default function Home() {
         setIsProcessing(false);
       }
     },
-    [addMessage, currentPage, ensureSession, getPreview]
+    [addMessage, currentPage, ensureSession, getPreview, llmModel]
+  );
+
+  const runApprovedMessage = useCallback(
+    async (msg: string) => {
+      const sessionId = ensureSession();
+      setIsProcessing(true);
+      try {
+        const response = await sendChatMessage(sessionId, msg, llmModel, true);
+        addMessage("assistant", response.assistant_message);
+        try {
+          const data = await getPreview(sessionId, currentPage, 50);
+          if (data) {
+            setPreview(data.preview || []);
+            setCurrentPage(data.page || 1);
+            setTotalPages(data.total_pages || 1);
+            setTotalRows(data.total_rows || 0);
+          }
+        } catch {
+          /* ignore preview fetch errors */
+        }
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        addMessage("assistant", `I encountered an error: ${errorMessage}. Try uploading a dataset first!`);
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [addMessage, currentPage, ensureSession, getPreview, llmModel]
   );
 
   // Process queued messages when idle
@@ -388,31 +450,107 @@ export default function Home() {
         {/* Left: Chat Interface */}
         <div className="chat-panel" style={{ flex: `0 0 ${chatWidth}%` }}>
         <div className="chat-header">
-          <h1>Dataset Curator</h1>
-          <Badge variant={isProcessing ? "warning" : preview.length ? "success" : "default"}>
-            {isProcessing ? "Processing..." : preview.length ? "Ready" : "Idle"}
-          </Badge>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <h1>Dataset Curator</h1>
+            <Badge variant={isProcessing ? "warning" : preview.length ? "success" : "default"}>
+              {isProcessing ? "Processing..." : preview.length ? "Ready" : "Idle"}
+            </Badge>
+          </div>
+          <div className="llm-select">
+            <label htmlFor="llm-model">Model</label>
+            <select
+              id="llm-model"
+              value={llmModel}
+              onChange={(e) => {
+                const value = e.target.value;
+                setLlmModel(value);
+                if (typeof window !== "undefined") {
+                  window.localStorage.setItem("llm_model", value);
+                }
+              }}
+            >
+              {(availableModels.length ? availableModels : [{
+                id: DEFAULT_LLM_MODEL,
+                name: "Llama 3.3 70B (free)",
+                provider: "meta",
+              }]).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <ScrollArea className="chat-messages">
-          {messages.map((msg: ChatMessage) => (
-            <div key={msg.id} className={`chat-message ${msg.role}`}>
-              <Avatar>
-                <AvatarFallback>{msg.role === "user" ? Icons.user : Icons.bot}</AvatarFallback>
-              </Avatar>
-              <div className="message-content">
-                <div className="message-header">
-                  <span className="message-role">{msg.role === "user" ? "You" : "Curator Agent"}</span>
-                  <span className="message-time">
-                    {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </span>
-                </div>
-                <div className="message-text">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+          {messages.map((msg: ChatMessage, index: number) => {
+            // Check if this is a successful transformation (not analysis-only)
+            const isTransformResult = msg.role === "assistant" && 
+              msg.content.includes("**Executed") && 
+              msg.content.includes("steps completed") &&
+              !msg.content.includes("analysis-only");
+            const requiresApproval = msg.role === "assistant" &&
+              msg.content.includes("Approval required");
+
+            const previousMessages = messages.slice(0, index).reverse();
+            const lastUserMessage = previousMessages.find((m) => m.role === "user");
+            
+            return (
+              <div key={msg.id} className={`chat-message ${msg.role}`}>
+                <Avatar>
+                  <AvatarFallback>{msg.role === "user" ? Icons.user : Icons.bot}</AvatarFallback>
+                </Avatar>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-role">{msg.role === "user" ? "You" : "Curator Agent"}</span>
+                    <span className="message-time">
+                      {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                  <div className="message-text">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  </div>
+                  {(isTransformResult || requiresApproval) && datasetId && (
+                    <div className="message-actions">
+                      {isTransformResult && (
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          onClick={() => downloadCuratedFile(datasetId)}
+                          className="download-result-btn"
+                        >
+                          {Icons.download}
+                          <span>Download Result</span>
+                        </Button>
+                      )}
+                      {requiresApproval && lastUserMessage && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={isProcessing}
+                            onClick={() => runApprovedMessage(lastUserMessage.content)}
+                          >
+                            ✅ Approve change
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={isProcessing}
+                            onClick={() => {
+                              addMessage("assistant", "Approval not granted. The destructive operation was cancelled.");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={messagesEndRef} />
         </ScrollArea>
 

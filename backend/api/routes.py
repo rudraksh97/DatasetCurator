@@ -28,6 +28,7 @@ from orchestrator.workflow import (
 )
 from repositories.dataset import DatasetRepository
 from services.llm import ChatService, IntentClassifierService
+from services.llm.client import LLMRateLimitError, LLMAPIError, FREE_LLM_MODELS
 
 router = APIRouter()
 
@@ -35,6 +36,8 @@ router = APIRouter()
 class ChatMessageRequest(BaseModel):
     """Request body for chat messages."""
     content: str
+    model: str | None = None
+    approval_granted: bool | None = None
 
 
 class ChatResponse(BaseModel):
@@ -42,6 +45,20 @@ class ChatResponse(BaseModel):
     user_message: str
     assistant_message: str
 
+
+@router.get("/llm/models")
+async def list_llm_models() -> Dict[str, object]:
+    """List available LLM models (currently free OpenRouter models).
+    
+    Returns:
+        Dictionary with model metadata and default model id.
+    """
+    default_model = next((m["id"] for m in FREE_LLM_MODELS if m.get("is_default")), settings.llm.default_model)
+    
+    return {
+        "default_model": default_model,
+        "models": FREE_LLM_MODELS,
+    }
 
 def _df_to_markdown(df: pd.DataFrame, max_rows: int = 10) -> str:
     """Convert DataFrame to markdown table format.
@@ -237,15 +254,69 @@ async def get_preview(
     }
 
 
+@router.get("/versions/{dataset_id}")
+async def list_versions(
+    dataset_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, object]:
+    """List all available versions of a dataset.
+    
+    Args:
+        dataset_id: Unique identifier for the dataset.
+        session: Database session.
+    
+    Returns:
+        Dictionary with list of versions and current version.
+    
+    Raises:
+        HTTPException: If dataset is not found.
+    """
+    repo = DatasetRepository(session)
+    
+    try:
+        state = await repo.get(dataset_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Find all versioned files for this dataset
+    versions = []
+    for file_path in CURATED_STORAGE.glob(f"{dataset_id}_v*.csv"):
+        # Extract version number from filename
+        filename = file_path.stem  # e.g., "exam_score_prediction_v2"
+        version_part = filename.split("_v")[-1]
+        try:
+            version_num = int(version_part)
+            file_stat = file_path.stat()
+            versions.append({
+                "version": version_num,
+                "filename": file_path.name,
+                "size_bytes": file_stat.st_size,
+                "modified_at": pd.Timestamp.fromtimestamp(file_stat.st_mtime).isoformat(),
+            })
+        except ValueError:
+            continue
+    
+    # Sort by version number
+    versions.sort(key=lambda v: v["version"])
+    
+    return {
+        "dataset_id": dataset_id,
+        "current_version": state.current_version,
+        "versions": versions,
+    }
+
+
 @router.get("/download/{dataset_id}/file")
 async def download_file(
-    dataset_id: str, 
+    dataset_id: str,
+    version: int | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     """Download the processed dataset file.
     
     Args:
         dataset_id: Unique identifier for the dataset.
+        version: Optional version number. If not provided, downloads the latest.
         session: Database session.
     
     Returns:
@@ -261,12 +332,21 @@ async def download_file(
     except ValueError:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    if not state.curated_path:
-        raise HTTPException(status_code=404, detail="No processed file available")
-
-    path = Path(state.curated_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    if version is not None:
+        # Download specific version
+        path = CURATED_STORAGE / f"{dataset_id}_v{version}.csv"
+        if not path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Version {version} not found. Use /versions/{dataset_id} to see available versions."
+            )
+    else:
+        # Download latest version
+        if not state.curated_path:
+            raise HTTPException(status_code=404, detail="No processed file available")
+        path = Path(state.curated_path)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File not found on disk")
 
     return FileResponse(path, media_type="text/csv", filename=path.name)
 
@@ -274,7 +354,7 @@ async def download_file(
 class ChatHandler:
     """Handler for chat operations, encapsulating all chat-related logic."""
     
-    def __init__(self, session: AsyncSession, dataset_id: str):
+    def __init__(self, session: AsyncSession, dataset_id: str, model: str | None = None):
         """Initialize the chat handler.
         
         Args:
@@ -284,8 +364,8 @@ class ChatHandler:
         self._session = session
         self._dataset_id = dataset_id
         self._repo = DatasetRepository(session)
-        self._intent_classifier = IntentClassifierService()
-        self._chat_service = ChatService()
+        self._intent_classifier = IntentClassifierService(model=model)
+        self._chat_service = ChatService(model=model)
     
     async def get_context(self) -> tuple:
         """Get dataset state and context for chat.
@@ -307,6 +387,7 @@ class ChatHandler:
         user_msg: str, 
         has_data: bool, 
         columns: list,
+        approval_granted: bool | None = None,
     ) -> str:
         """Handle data transformation intent.
         
@@ -328,6 +409,7 @@ class ChatHandler:
             data_path=data_path,
             columns=columns,
             max_retries=1,
+            approval_granted=bool(approval_granted),
         )
         
         if final_df is not None and success:
@@ -434,24 +516,45 @@ async def chat(
     Returns:
         ChatResponse with user and assistant messages.
     """
-    handler = ChatHandler(session, dataset_id)
+    handler = ChatHandler(session, dataset_id, model=message.model)
     user_msg = message.content
     timestamp = pd.Timestamp.utcnow().isoformat()
     
-    state, has_data, columns = await handler.get_context()
+    try:
+        state, has_data, columns = await handler.get_context()
 
-    intent_classifier = IntentClassifierService()
-    intent_result = await intent_classifier.classify(user_msg, has_data=has_data, columns=columns)
-    intent = intent_result.get("intent", "chat")
+        # Use the handler's configured intent classifier (respects selected model)
+        intent_result = await handler._intent_classifier.classify(user_msg, has_data=has_data, columns=columns)
+        intent = intent_result.get("intent", "chat")
+        
+        if intent_result.get("error"):
+            print(f"[Chat] Intent classification warning: {intent_result.get('error')}")
+
+        if intent in ("transform_data", "multi_transform"):
+            response = await handler.handle_transform(
+                state,
+                user_msg,
+                has_data,
+                columns,
+                approval_granted=message.approval_granted,
+            )
+        else:
+            response = await handler.handle_chat(state, user_msg, has_data, columns)
+
+        await handler.save_history(state, user_msg, response, timestamp)
+
+        return ChatResponse(user_message=user_msg, assistant_message=response)
     
-    if intent_result.get("error"):
-        print(f"[Chat] Intent classification warning: {intent_result.get('error')}")
-
-    if intent in ("transform_data", "multi_transform"):
-        response = await handler.handle_transform(state, user_msg, has_data, columns)
-    else:
-        response = await handler.handle_chat(state, user_msg, has_data, columns)
-
-    await handler.save_history(state, user_msg, response, timestamp)
-
-    return ChatResponse(user_message=user_msg, assistant_message=response)
+    except LLMRateLimitError as e:
+        # Return rate limit error as a friendly message instead of 500
+        response = str(e)
+        if state:
+            await handler.save_history(state, user_msg, response, timestamp)
+        return ChatResponse(user_message=user_msg, assistant_message=response)
+    
+    except LLMAPIError as e:
+        # Return API errors as friendly messages
+        response = f"⚠️ **AI Service Error:** {str(e)}"
+        if state:
+            await handler.save_history(state, user_msg, response, timestamp)
+        return ChatResponse(user_message=user_msg, assistant_message=response)

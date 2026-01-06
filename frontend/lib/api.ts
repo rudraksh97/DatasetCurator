@@ -4,8 +4,8 @@
  * All functions communicate with the FastAPI backend for dataset
  * operations including upload, preview, download, and chat.
  */
-
-import type { UploadResponse, PreviewResponse, ChatResponse } from "@/types/api";
+ 
+import type { UploadResponse, PreviewResponse, ChatResponse, LlmModelsResponse } from "@/types/api";
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -56,13 +56,23 @@ export function downloadCuratedFile(datasetId: string): void {
  * 
  * @param datasetId - Unique identifier for the dataset.
  * @param content - Message content.
+ * @param model - Optional LLM model identifier.
  * @returns Chat response with user and assistant messages.
  */
-export async function sendChatMessage(datasetId: string, content: string): Promise<ChatResponse> {
+export async function sendChatMessage(
+  datasetId: string,
+  content: string,
+  model?: string,
+  approvalGranted?: boolean
+): Promise<ChatResponse> {
   const res = await fetch(`${BASE_URL}/chat/${datasetId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({
+      content,
+      model,
+      approval_granted: approvalGranted === true ? true : undefined,
+    }),
   });
   return handle<ChatResponse>(res);
 }
@@ -83,4 +93,14 @@ export async function getPreview(
   const res = await fetch(`${BASE_URL}/preview/${datasetId}?page=${page}&page_size=${pageSize}`);
   if (res.status === 404) return null;
   return handle<PreviewResponse>(res);
+}
+
+/**
+ * Get list of available LLM models from the backend.
+ *
+ * @returns Model list and default model id.
+ */
+export async function getLlmModels(): Promise<LlmModelsResponse> {
+  const res = await fetch(`${BASE_URL}/llm/models`);
+  return handle<LlmModelsResponse>(res);
 }

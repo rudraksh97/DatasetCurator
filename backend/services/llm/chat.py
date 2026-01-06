@@ -36,13 +36,20 @@ class ChatService:
         _query_registry: Registry of query handlers.
     """
     
-    def __init__(self, client: Optional[OpenRouterClient] = None):
+    def __init__(self, client: Optional[OpenRouterClient] = None, model: Optional[str] = None):
         """Initialize the chat service.
         
         Args:
             client: LLM client instance (uses default if None).
+            model: Optional model identifier to override the default.
         """
-        self._client = client or get_llm_client()
+        if client is not None:
+            self._client = client
+        elif model:
+            # Use a dedicated client with the selected default model
+            self._client = OpenRouterClient(default_model=model)
+        else:
+            self._client = get_llm_client()
         self._query_registry = get_query_registry()
     
     async def chat(
