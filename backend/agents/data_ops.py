@@ -250,6 +250,12 @@ class DataOperator:
             self.df = self.df[self.df[col] <= value]
         elif operator == "contains":
             self.df = self.df[self.df[col].astype(str).str.contains(str(value), case=False, na=False)]
+        elif operator in ("between", "range"):
+            # Support between operator: value is min, value2 is max
+            value2 = params.get("value2")
+            if value2 is not None:
+                value2 = self._coerce_value(col, value2)
+                self.df = self.df[(self.df[col] >= value) & (self.df[col] <= value2)]
         
         after = len(self.df)
         return f"Filtered to {after} rows (removed {before - after})."
@@ -266,11 +272,27 @@ class DataOperator:
 
         before = len(self.df)
         
-        # Try to convert value to match column dtype
-        value = self._coerce_value(col, value)
-        
-        if operator == "==":
+        # Handle null value specially
+        if value is None or (isinstance(value, str) and value.lower() in ("null", "none", "nan")):
+            self.df = self.df[self.df[col].notna()]
+        elif operator == "==":
+            value = self._coerce_value(col, value)
             self.df = self.df[self.df[col] != value]
+        elif operator == "!=":
+            value = self._coerce_value(col, value)
+            self.df = self.df[self.df[col] == value]
+        elif operator == ">":
+            value = self._coerce_value(col, value)
+            self.df = self.df[self.df[col] <= value]
+        elif operator == "<":
+            value = self._coerce_value(col, value)
+            self.df = self.df[self.df[col] >= value]
+        elif operator == ">=":
+            value = self._coerce_value(col, value)
+            self.df = self.df[self.df[col] < value]
+        elif operator == "<=":
+            value = self._coerce_value(col, value)
+            self.df = self.df[self.df[col] > value]
         elif operator == "contains":
             self.df = self.df[~self.df[col].astype(str).str.contains(str(value), case=False, na=False)]
         
