@@ -323,7 +323,7 @@ class ChatHandler:
             return "**No data to transform.** Load a dataset first!"
         
         data_path = state.curated_path or state.raw_path
-        success, final_message, final_df = await execute_transformation(
+        success, final_message, final_df, is_analysis = await execute_transformation(
             user_message=user_msg,
             data_path=data_path,
             columns=columns,
@@ -331,12 +331,14 @@ class ChatHandler:
         )
         
         if final_df is not None and success:
-            version = state.current_version + 1
-            new_path = CURATED_STORAGE / f"{state.dataset_id}_v{version}.csv"
-            final_df.to_csv(new_path, index=False)
-            
-            state.curated_path = str(new_path)
-            state.current_version = version
+            # Only save to curated storage if NOT analysis mode
+            if not is_analysis:
+                version = state.current_version + 1
+                new_path = CURATED_STORAGE / f"{state.dataset_id}_v{version}.csv"
+                final_df.to_csv(new_path, index=False)
+                
+                state.curated_path = str(new_path)
+                state.current_version = version
             
             return final_message + f"\n\n**Preview:**\n\n{_df_to_markdown(final_df, 5)}"
         

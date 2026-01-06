@@ -86,9 +86,11 @@ class TransformationState(TypedDict):
     # Planning
     steps: List[Dict[str, Any]]
     current_step_idx: int
+    is_analysis: bool  # True = read-only analysis (use copy), False = mutate dataset
     
     # Execution
     df: Any  # pd.DataFrame - using Any for TypedDict compatibility
+    analysis_df: Any  # pd.DataFrame - copy for analysis operations
     results: List[StepResult]
     
     # Control flow
@@ -193,6 +195,7 @@ async def plan_node(state: TransformationState) -> TransformationState:
     plan = await create_execution_plan(state["user_message"], state["columns"])
     steps = plan.get("steps", [])
     plan_error = plan.get("error", "")
+    is_analysis = plan.get("is_analysis", False)
     
     if plan_error:
         error_message = f"Planning failed: {plan_error}"
@@ -201,10 +204,17 @@ async def plan_node(state: TransformationState) -> TransformationState:
     else:
         error_message = ""
     
+    # If analysis mode, prepare analysis_df as a copy
+    analysis_df = None
+    if is_analysis and state.get("df") is not None:
+        analysis_df = state["df"].copy()
+    
     return {
         **state,
         "steps": steps,
         "current_step_idx": 0,
+        "is_analysis": is_analysis,
+        "analysis_df": analysis_df,
         "results": [],
         "error_message": error_message,
     }
@@ -289,6 +299,7 @@ def execute_step_node(state: TransformationState) -> TransformationState:
     
     df = state["df"]
     results = list(state["results"])
+    is_analysis = state.get("is_analysis", False)
     
     if df is None:
         result = _create_step_result(step_num, description, operation or "unknown", StepStatus.FAILED, "No data loaded")
@@ -298,23 +309,41 @@ def execute_step_node(state: TransformationState) -> TransformationState:
         result = _create_step_result(step_num, description, "unknown", StepStatus.SKIPPED, "No operation specified")
         return {**state, "results": results + [result], "current_step_idx": idx + 1}
     
-    rows_before = len(df)
+    # Use analysis_df if in analysis mode, otherwise use main df
+    working_df = state.get("analysis_df") if is_analysis else df
+    if working_df is None:
+        working_df = df
+    
+    rows_before = len(working_df)
     
     try:
-        success, msg, new_df = _execute_operation(df, operation, params)
+        success, msg, new_df = _execute_operation(working_df, operation, params)
         
         if success and new_df is not None:
             result = _create_step_result(
                 step_num, description, operation, StepStatus.SUCCESS, msg,
                 rows_before=rows_before, rows_after=len(new_df)
             )
-            return {
-                **state,
-                "df": new_df,
-                "results": results + [result],
-                "current_step_idx": idx + 1,
-                "error_message": "",
-            }
+
+            # If analysis mode, update analysis_df and keep original df intact
+            # If transformation mode, update df directly
+            if is_analysis:
+                return {
+                    **state,
+                    "analysis_df": new_df,
+                    "df": df,  # original unchanged
+                    "results": results + [result],
+                    "current_step_idx": idx + 1,
+                    "error_message": "",
+                }
+            else:
+                return {
+                    **state,
+                    "df": new_df,
+                    "results": results + [result],
+                    "current_step_idx": idx + 1,
+                    "error_message": "",
+                }
         
         # Operation failed - track retry count
         retry_count = 0
@@ -345,18 +374,21 @@ def validate_step_node(state: TransformationState) -> TransformationState:
         return state
     
     last_result = state["results"][-1]
+    is_analysis = state.get("is_analysis", False)
     
     if last_result.status == StepStatus.SUCCESS:
-        df = state["df"]
-        
-        if df is not None:
-            if last_result.rows_before > 0:
-                removal_rate = 1 - (last_result.rows_after / last_result.rows_before)
-                if removal_rate > 0.9:
-                    last_result.message += f" ⚠️ Warning: Removed {removal_rate*100:.1f}% of rows"
+        # Skip warnings for analysis mode (operations on a copy)
+        if not is_analysis:
+            df = state["df"]
             
-            if len(df) == 0:
-                last_result.message += " ⚠️ Warning: Dataset is now empty"
+            if df is not None:
+                if last_result.rows_before > 0:
+                    removal_rate = 1 - (last_result.rows_after / last_result.rows_before)
+                    if removal_rate > 0.9:
+                        last_result.message += f" ⚠️ Warning: Removed {removal_rate*100:.1f}% of rows"
+                
+                if len(df) == 0:
+                    last_result.message += " ⚠️ Warning: Dataset is now empty"
     
     return state
 
@@ -365,6 +397,11 @@ def finalize_node(state: TransformationState) -> TransformationState:
     """Create final summary message."""
     results = state["results"]
     df = state["df"]
+    is_analysis = state.get("is_analysis", False)
+    analysis_df = state.get("analysis_df")
+    
+    # Use analysis_df for reporting if in analysis mode, otherwise use df
+    result_df = analysis_df if is_analysis and analysis_df is not None else df
     
     if not state["steps"] and state["error_message"]:
         return {
@@ -398,8 +435,10 @@ def finalize_node(state: TransformationState) -> TransformationState:
     if failed > 0:
         parts.append(f" ({failed} failed)")
     
-    if df is not None and len(df) > 0:
-        parts.append(f"\n**Result:** {len(df)} rows × {len(df.columns)} columns")
+    if result_df is not None and len(result_df) > 0:
+        parts.append(f"\n**Result:** {len(result_df)} rows × {len(result_df.columns)} columns")
+        if is_analysis:
+            parts.append(" (analysis-only, original dataset unchanged)")
     
     return {
         **state,
@@ -513,7 +552,9 @@ async def execute_transformation(
         "columns": columns,
         "steps": [],
         "current_step_idx": 0,
+        "is_analysis": False,
         "df": None,
+        "analysis_df": None,
         "results": [],
         "needs_approval": False,
         "approval_granted": True,
@@ -525,8 +566,14 @@ async def execute_transformation(
     
     final_state = await graph.ainvoke(initial_state)
     
+    # Return analysis_df for preview if in analysis mode, otherwise return df
+    is_analysis = final_state.get("is_analysis", False)
+    result_df = final_state.get("analysis_df") if is_analysis else final_state["df"]
+    
+    # For analysis mode, include both for the handler to decide
     return (
         final_state["success"],
         final_state["final_message"],
-        final_state["df"],
+        result_df if result_df is not None else final_state["df"],
+        is_analysis,
     )

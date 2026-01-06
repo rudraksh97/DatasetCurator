@@ -72,6 +72,11 @@ RULES:
 2. Steps execute in order (later steps see earlier results)
 3. Order: row operations BEFORE column operations when possible
 4. Be specific about column names and values
+5. For EACH step, include optional flags:
+   - "analysis_only": true if the user wants read-only analysis / copy-only (do NOT mutate main dataset); false if the step should change the dataset.
+   - "mutate": true if the user explicitly wants to persist/mutate the dataset for that step; false otherwise.
+   If the user says things like "just analyze", "don't change", "for analysis", set analysis_only=true.
+   If the user explicitly wants to change/save/update data, set mutate=true (and analysis_only=false).
 
 === AVAILABLE OPERATIONS (by category) ===
 
@@ -127,8 +132,14 @@ VALIDATION & QUALITY:
 
 Available columns: {columns}
 
+CRITICAL: Categorize the ENTIRE request as either:
+- "analysis": User wants to EXPLORE/ANALYZE/VIEW data (read-only, don't mutate the dataset)
+  Examples: "show me", "what is", "group by", "count", "average", "summarize", "analyze"
+- "transformation": User wants to CHANGE/MODIFY/CLEAN the dataset (mutate and persist)
+  Examples: "remove", "delete", "drop", "keep only", "fill", "convert", "rename", "sort and save"
+
 Respond with ONLY valid JSON:
-{{"is_multi_step": true/false, "steps": [{{"step": 1, "description": "...", "operation": "op_name", "params": {{...}}}}]}}"""
+{{"is_analysis": true/false, "is_multi_step": true/false, "steps": [{{"step": 1, "description": "...", "operation": "op_name", "params": {{...}}}}]}}"""
 
 
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.

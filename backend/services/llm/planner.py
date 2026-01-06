@@ -63,10 +63,14 @@ class ExecutionPlannerService:
         result = self._client.parse_json_response(response)
         
         if result and "steps" in result:
+            # Ensure is_analysis is present (default to false if not specified)
+            if "is_analysis" not in result:
+                result["is_analysis"] = False
             return result
         
         return {
             "is_multi_step": False,
+            "is_analysis": False,
             "steps": [],
             "error": "Failed to parse execution plan from LLM response",
         }
