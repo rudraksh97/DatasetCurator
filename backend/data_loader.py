@@ -33,8 +33,11 @@ async def get_file_size_mb(file_path: str) -> float:
     storage = get_storage()
     try:
         stats = await storage.get_file_stats(str(file_path))
-        return stats["size"] / (1024 * 1024)
-    except Exception:
+        if stats and hasattr(stats, "size_bytes"):
+            return stats.size_bytes / (1024 * 1024)
+        return 0.0
+    except Exception as e:
+        print(f"[DataLoader] Error getting size: {e}")
         return 0.0
 
 
