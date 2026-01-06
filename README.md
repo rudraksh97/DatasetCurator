@@ -19,10 +19,10 @@ Dataset Curator enables non-technical users to clean and transform CSV datasets 
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                              Client Layer                                     │
+│                              Client Layer                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  Next.js 14 (App Router)                                                     │
-│  ├─ Chat interface with streaming responses                                  │
+│  ├─ Chat interface                                                           │
 │  ├─ Paginated data preview                                                   │
 │  └─ Session/version management                                               │
 └────────────────────────────────────┬─────────────────────────────────────────┘
@@ -32,9 +32,9 @@ Dataset Curator enables non-technical users to clean and transform CSV datasets 
 ├──────────────────────────────────────────────────────────────────────────────┤
 │  routes.py                                                                   │
 │  ├─ POST /upload          → process_upload()                                 │
-│  ├─ POST /chat/{id}       → intent_classifier → [transform | chat]          │
-│  ├─ GET  /preview/{id}    → paginated DataFrame read                        │
-│  └─ GET  /download/{id}   → file stream                                     │
+│  ├─ POST /chat/{id}       → intent_classifier → [transform | chat]           │
+│  ├─ GET  /preview/{id}    → paginated DataFrame read                         │
+│  └─ GET  /download/{id}   → file stream                                      │
 └────────────────────────────────────┬─────────────────────────────────────────┘
                                      │
          ┌───────────────────────────┼───────────────────────────┐
@@ -135,7 +135,7 @@ Multi-step transformations execute through a state machine with retry semantics:
 - Each step is atomic—failure doesn't corrupt prior steps
 - Retries use identical parameters (deterministic)
 - Validation warns on >90% row removal or empty result
-- State persists to PostgreSQL after each step
+- Final state persists to PostgreSQL on completion
 
 ### 3. Chat/Query Flow
 
@@ -169,7 +169,7 @@ User: "What's the average price by category?"
          └────────────────────┘
 ```
 
-**Available query tools:** `get_statistics`, `get_value_counts`, `get_sample_rows`, `search_rows`
+**Available query tools:** `find_columns`, `search_rows`, `get_row`, `get_value`, `get_random_value`, `calculate_ratio`, `get_statistics`, `group_by`, `list_columns`, `get_row_count`
 
 ---
 
@@ -392,6 +392,7 @@ pytest -v
 POST /upload
 Content-Type: multipart/form-data
 
+dataset_id: <unique-identifier>
 file: <csv-file>
 ```
 
@@ -402,7 +403,10 @@ file: <csv-file>
   "preview": [...],
   "row_count": 10000,
   "column_count": 8,
-  "columns": ["id", "date", "revenue", ...]
+  "page": 1,
+  "page_size": 50,
+  "total_rows": 10000,
+  "total_pages": 200
 }
 ```
 
@@ -413,15 +417,15 @@ POST /chat/{dataset_id}
 Content-Type: application/json
 
 {
-  "message": "remove rows where revenue is null and sort by date descending"
+  "content": "remove rows where revenue is null and sort by date descending"
 }
 ```
 
 **Response:**
 ```json
 {
-  "response": "**Executed 2 steps:**\n\nStep 1: Remove null revenue\n  ✓ Removed 45 rows...",
-  "version": 2
+  "user_message": "remove rows where revenue is null and sort by date descending",
+  "assistant_message": "**Executed 2 steps:**\n\nStep 1: Remove null revenue\n  ✓ Removed 45 rows..."
 }
 ```
 
@@ -434,10 +438,13 @@ GET /preview/{dataset_id}?page=1&page_size=50
 **Response:**
 ```json
 {
-  "data": [...],
-  "total_rows": 9955,
+  "dataset_id": "sales_abc123",
+  "preview": [...],
+  "row_count": 9955,
+  "column_count": 8,
   "page": 1,
   "page_size": 50,
+  "total_rows": 9955,
   "total_pages": 200
 }
 ```
@@ -481,17 +488,21 @@ op_map = {
 1. **Create handler** (`services/queries/handlers.py`):
 
 ```python
-class MyQueryHandler(QueryHandler):
-    name = "my_query"
-    description = "What this does"
-    parameters = {...}  # JSON Schema
+class MyQueryHandler(BaseQueryHandler):
+    @property
+    def query_type(self) -> str:
+        return "my_query"
     
-    def execute(self, df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
+    @property
+    def supported_functions(self) -> List[str]:
+        return ["my_function"]
+    
+    def execute(self, df: pd.DataFrame, arguments: Dict[str, Any]) -> QueryResult:
         # Implementation
-        return {"result": ...}
+        return self._success(result=...)
 ```
 
-2. **Register** in `services/queries/registry.py`.
+2. **Register** in `services/queries/registry.py` (add to `_register_default_handlers`).
 
 3. **Add tool definition** in `services/llm/tools.py`.
 
@@ -501,8 +512,8 @@ class MyQueryHandler(QueryHandler):
 
 **Why LangGraph over raw async chains?**
 - Explicit state machine semantics
-- Built-in checkpointing (future: pause/resume)
 - Conditional edges without callback spaghetti
+- Framework supports checkpointing for future pause/resume capability
 - Visual graph debugging
 
 **Why OpenRouter?**
