@@ -238,10 +238,10 @@ GET  /download/{dataset_id}/file
 git clone <repo>
 cd dataset-curator
 
-# Create .env file
+# Create .env file with required settings
 cat > .env << 'EOF'
 OPENROUTER_API_KEY=your_key_here
-DATABASE_URL=postgresql+asyncpg://dataset_curator:dataset_curator@db:5432/dataset_curator
+DATABASE_URL=postgresql+asyncpg://dataset_curator:your_secure_password@db:5432/dataset_curator
 EOF
 ```
 
@@ -256,6 +256,58 @@ Frontend:  http://localhost:3000
 API:       http://localhost:8000
 API Docs:  http://localhost:8000/docs
 ```
+
+## Environment Variables
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string (e.g., `postgresql+asyncpg://user:pass@host:5432/db`) |
+| `OPENROUTER_API_KEY` | API key from [OpenRouter](https://openrouter.ai/keys) |
+
+### Optional - LLM Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_LLM_MODEL` | `meta-llama/llama-3.3-70b-instruct:free` | LLM model for transformations |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL |
+
+### Optional - Embedding Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence transformer model for semantic search |
+| `EMBEDDING_DIM` | `384` | Embedding vector dimension (must match model) |
+
+### Optional - Storage Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAW_STORAGE_PATH` | `storage/raw` | Path for uploaded files |
+| `CURATED_STORAGE_PATH` | `storage/curated` | Path for processed files |
+
+### Optional - Data Processing Thresholds
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LARGE_FILE_SIZE_MB` | `100` | Files larger are considered "large" |
+| `LARGE_ROW_COUNT` | `1000000` | Datasets with more rows are "large" |
+| `DATA_SAMPLE_SIZE` | `10000` | Sample size for large file queries |
+| `DATA_CHUNK_SIZE` | `50000` | Chunk size for streaming operations |
+
+### Optional - CORS Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowed origins |
+
+### Optional - Approval Flow
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS` | `false` | Require approval for destructive ops |
+| `APPROVAL_ROW_THRESHOLD` | `1000` | Row threshold triggering approval |
 
 ## Development
 

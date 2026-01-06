@@ -8,6 +8,8 @@ To run locally:
 """
 from __future__ import annotations
 
+import os
+
 from dotenv import load_dotenv
 load_dotenv()  # Load .env file before other imports
 
@@ -24,11 +26,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allowed origins for CORS
-allowed_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+# Allowed origins for CORS (configurable via environment variable)
+# ALLOWED_ORIGINS can be a comma-separated list of origins
+# e.g., "http://localhost:3000,https://myapp.com"
+_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+allowed_origins = [origin.strip() for origin in _origins_env.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,

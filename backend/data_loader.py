@@ -8,11 +8,11 @@ using chunked reading and streaming. It supports:
 - Streaming statistics calculation
 - Reservoir sampling for random row selection
 
-Thresholds:
-- LARGE_FILE_SIZE_MB: Files larger than 100MB are considered large
-- LARGE_ROW_COUNT: Datasets with over 1M rows are considered large
-- SAMPLE_SIZE: Default sample size for exploratory queries (10,000 rows)
-- CHUNK_SIZE: Processing chunk size (50,000 rows)
+Configurable thresholds (via environment variables):
+- LARGE_FILE_SIZE_MB: Files larger than this are considered large (default: 100MB)
+- LARGE_ROW_COUNT: Datasets with more rows are considered large (default: 1M)
+- SAMPLE_SIZE: Default sample size for exploratory queries (default: 10,000)
+- CHUNK_SIZE: Processing chunk size (default: 50,000)
 """
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ from typing import Optional, Tuple
 
 import pandas as pd
 
-# Thresholds for large dataset handling
-LARGE_FILE_SIZE_MB = 100  # 100MB
-LARGE_ROW_COUNT = 1_000_000  # 1M rows
-SAMPLE_SIZE = 10_000  # Sample size for exploratory queries
-CHUNK_SIZE = 50_000  # Chunk size for processing
+# Thresholds for large dataset handling (configurable via environment)
+LARGE_FILE_SIZE_MB = int(os.getenv("LARGE_FILE_SIZE_MB", "100"))
+LARGE_ROW_COUNT = int(os.getenv("LARGE_ROW_COUNT", "1000000"))
+SAMPLE_SIZE = int(os.getenv("DATA_SAMPLE_SIZE", "10000"))
+CHUNK_SIZE = int(os.getenv("DATA_CHUNK_SIZE", "50000"))
 
 
 def get_file_size_mb(file_path: Path) -> float:

@@ -17,10 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://dataset_curator:dataset_curator@localhost:5432/dataset_curator",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError(
+        "DATABASE_URL environment variable is required. "
+        "Example: postgresql+asyncpg://user:password@localhost:5432/dbname"
+    )
 
 
 class Base(DeclarativeBase):

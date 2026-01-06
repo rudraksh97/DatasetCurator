@@ -3,13 +3,21 @@
 This module defines the database schema for:
 - DatasetRecord: Stores dataset metadata and state
 - DatasetEmbedding: Stores vector embeddings for semantic search
+
+Note: EMBEDDING_DIM must match the dimension of the embedding model used.
+Configure via EMBEDDING_DIM environment variable (default: 384 for all-MiniLM-L6-v2).
 """
 from __future__ import annotations
+
+import os
 
 from sqlalchemy import Column, DateTime, Integer, String, JSON, Text, func
 from pgvector.sqlalchemy import Vector
 
 from db import Base
+
+# Must match EMBEDDING_DIM in embeddings.py
+_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
 
 class DatasetRecord(Base):
@@ -65,6 +73,6 @@ class DatasetEmbedding(Base):
     dataset_id = Column(String, index=True, nullable=False)
     row_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(384), nullable=False)  # sentence-transformers all-MiniLM-L6-v2
+    embedding = Column(Vector(_EMBEDDING_DIM), nullable=False)
     metadata_ = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

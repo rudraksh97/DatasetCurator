@@ -15,9 +15,28 @@ services:
     depends_on:
       - db
     environment:
+      # Required
       DATABASE_URL: postgresql+asyncpg://dataset_curator:dataset_curator@db:5432/dataset_curator
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
-      BING_SEARCH_API_KEY: ${BING_SEARCH_API_KEY}
+      # Optional - LLM Configuration
+      DEFAULT_LLM_MODEL: ${DEFAULT_LLM_MODEL:-meta-llama/llama-3.3-70b-instruct:free}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      # Optional - Embedding Configuration
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+      # Optional - Storage Paths
+      RAW_STORAGE_PATH: ${RAW_STORAGE_PATH:-storage/raw}
+      CURATED_STORAGE_PATH: ${CURATED_STORAGE_PATH:-storage/curated}
+      # Optional - Data Processing Thresholds
+      LARGE_FILE_SIZE_MB: ${LARGE_FILE_SIZE_MB:-100}
+      LARGE_ROW_COUNT: ${LARGE_ROW_COUNT:-1000000}
+      DATA_SAMPLE_SIZE: ${DATA_SAMPLE_SIZE:-10000}
+      DATA_CHUNK_SIZE: ${DATA_CHUNK_SIZE:-50000}
+      # Optional - CORS (comma-separated origins)
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Optional - Approval Flow
+      REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS: ${REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS:-false}
+      APPROVAL_ROW_THRESHOLD: ${APPROVAL_ROW_THRESHOLD:-1000}
     ports:
       - "8000:8000"
     volumes:

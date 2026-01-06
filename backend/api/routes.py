@@ -69,7 +69,13 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
     
     Returns:
         Dictionary containing paginated data and metadata.
+    
+    Raises:
+        HTTPException: If the file cannot be read.
     """
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Data file not found: {path.name}")
+    
     try:
         df = pd.read_csv(path)
         total_rows = len(df)
@@ -89,14 +95,20 @@ def _preview_df(path: Path, page: int = 1, page_size: int = 50) -> Dict[str, obj
             "total_rows": total_rows,
             "total_pages": total_pages,
         }
-    except Exception:
+    except pd.errors.EmptyDataError:
         return {
             "data": [],
             "page": 1,
             "page_size": page_size,
             "total_rows": 0,
             "total_pages": 0,
+            "warning": "File is empty",
         }
+    except pd.errors.ParserError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    except Exception as e:
+        print(f"[API] Error reading preview for {path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read data file: {str(e)}")
 
 
 async def _embed_dataset_background(dataset_id: str, file_path: str) -> None:
@@ -296,6 +308,10 @@ async def chat(
         columns=columns,
     )
     intent = intent_result.get("intent", "chat")
+    
+    # Check for classification errors and surface them
+    if intent_result.get("error"):
+        print(f"[Chat] Intent classification warning: {intent_result.get('error')}")
 
     response = ""
 

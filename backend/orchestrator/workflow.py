@@ -8,6 +8,7 @@ This module provides:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -27,8 +28,9 @@ from models.db_models import DatasetRecord
 # Storage Configuration
 # ============================================================================
 
-RAW_STORAGE = Path("storage/raw")
-CURATED_STORAGE = Path("storage/curated")
+# Storage paths (configurable via environment variables)
+RAW_STORAGE = Path(os.getenv("RAW_STORAGE_PATH", "storage/raw"))
+CURATED_STORAGE = Path(os.getenv("CURATED_STORAGE_PATH", "storage/curated"))
 
 # Ensure directories exist
 RAW_STORAGE.mkdir(parents=True, exist_ok=True)
@@ -136,8 +138,10 @@ async def process_upload(
     try:
         df = pd.read_csv(source_path, nrows=2000)
         state.schema = {col: str(dtype) for col, dtype in df.dtypes.items()}
-    except Exception:
-        pass  # Schema will remain None on error
+    except Exception as e:
+        # Log the error but continue - schema analysis is non-critical
+        print(f"[Upload] Warning: Could not analyze schema for {dataset_id}: {e}")
+        state.schema = None
 
     # 3. Create curated copy
     curated_path = CURATED_STORAGE / f"{dataset_id}_v1.csv"
@@ -146,8 +150,11 @@ async def process_upload(
         df_full.to_csv(curated_path, index=False)
         state.curated_path = str(curated_path)
         state.current_version = 1
-    except Exception:
+    except Exception as e:
+        print(f"[Upload] Error: Could not create curated copy for {dataset_id}: {e}")
         state.curated_path = None
+        # Re-raise since this is a critical failure
+        raise ValueError(f"Failed to process dataset: {e}") from e
 
     # 4. Save to database
     state = await upsert_dataset_state(session, state)
@@ -162,13 +169,22 @@ async def plan_node(state: TransformationState) -> TransformationState:
     """Create execution plan from user message."""
     plan = await create_execution_plan(state["user_message"], state["columns"])
     steps = plan.get("steps", [])
+    plan_error = plan.get("error", "")
+    
+    # Determine error message
+    if plan_error:
+        error_message = f"Planning failed: {plan_error}"
+    elif not steps:
+        error_message = "Could not create execution plan - no steps were generated"
+    else:
+        error_message = ""
     
     return {
         **state,
         "steps": steps,
         "current_step_idx": 0,
         "results": [],
-        "error_message": "" if steps else "Could not create execution plan",
+        "error_message": error_message,
     }
 
 
@@ -190,9 +206,20 @@ def load_data_node(state: TransformationState) -> TransformationState:
 
 
 def check_approval_node(state: TransformationState) -> TransformationState:
-    """Check if current step needs human approval (destructive operations)."""
+    """Check if current step needs human approval (destructive operations).
+    
+    Note: Approval flow is currently disabled for automatic execution.
+    To enable, set REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS=true in environment.
+    """
     if state["current_step_idx"] >= len(state["steps"]):
         return state
+    
+    # Approval is disabled by default for seamless UX
+    # Enable via environment variable if needed for production safety
+    require_approval = os.getenv("REQUIRE_APPROVAL_FOR_DESTRUCTIVE_OPS", "false").lower() == "true"
+    
+    if not require_approval:
+        return {**state, "needs_approval": False}
     
     step = state["steps"][state["current_step_idx"]]
     operation = step.get("operation", "")
@@ -203,10 +230,10 @@ def check_approval_node(state: TransformationState) -> TransformationState:
     needs_approval = False
     if operation in destructive_ops:
         df = state["df"]
-        if df is not None and len(df) > 1000:
-            # Large dataset + destructive operation
-            # Set to True to enable approval flow
-            needs_approval = False
+        # Require approval for large datasets with destructive operations
+        approval_threshold = int(os.getenv("APPROVAL_ROW_THRESHOLD", "1000"))
+        if df is not None and len(df) > approval_threshold:
+            needs_approval = True
     
     return {
         **state,
@@ -345,6 +372,14 @@ def finalize_node(state: TransformationState) -> TransformationState:
     """Create final summary message."""
     results = state["results"]
     df = state["df"]
+    
+    # Check for planning errors (no steps generated)
+    if not state["steps"] and state["error_message"]:
+        return {
+            **state,
+            "final_message": f"**Error:** {state['error_message']}",
+            "success": False,
+        }
     
     successful = sum(1 for r in results if r.status == StepStatus.SUCCESS)
     failed = sum(1 for r in results if r.status == StepStatus.FAILED)

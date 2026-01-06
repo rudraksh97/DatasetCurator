@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
@@ -11,9 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.db_models import DatasetEmbedding
 
-# Use all-MiniLM-L6-v2: fast, 384 dimensions, good quality
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
+# Embedding model configuration (configurable via environment variables)
+# Default: all-MiniLM-L6-v2 - fast, 384 dimensions, good quality
+# Other options: all-mpnet-base-v2 (768d), paraphrase-MiniLM-L6-v2 (384d)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
 
 
 @lru_cache(maxsize=1)

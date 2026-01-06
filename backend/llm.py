@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+DEFAULT_MODEL = os.getenv("DEFAULT_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
 # ---- Types -----------------------------------------------------------------
 Message = Dict[str, Any]
@@ -231,17 +231,26 @@ async def create_execution_plan(
         result = _parse_json_response(response)
         if result and "steps" in result:
             return result
+        # LLM returned invalid/unparseable response
+        return {
+            "is_multi_step": False,
+            "steps": [],
+            "error": "Failed to parse execution plan from LLM response",
+        }
     except Exception as e:
         error_str = str(e)
         error_lower = error_str.lower()
         # If it's a data policy error, provide helpful message
         if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            print(f"Planning error: Model requires OpenRouter privacy settings")
+            error_msg = "Model requires OpenRouter privacy settings. Visit https://openrouter.ai/settings/privacy"
         else:
-            print(f"Planning error: {e}")
-    
-    # Fallback: return empty plan
-    return {"is_multi_step": False, "steps": []}
+            error_msg = f"Planning failed: {error_str}"
+        print(f"[LLM] Planning error: {error_msg}")
+        return {
+            "is_multi_step": False,
+            "steps": [],
+            "error": error_msg,
+        }
 
 # ---- Prompts ---------------------------------------------------------------
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
@@ -525,16 +534,28 @@ async def classify_intent(
         result = _parse_json_response(response)
         if result and "intent" in result:
             return result
+        # LLM returned invalid/unparseable response
+        return {
+            "intent": "chat",
+            "params": {},
+            "explanation": "Failed to parse intent from LLM response",
+            "error": "Invalid LLM response format",
+        }
     except Exception as e:
         error_str = str(e)
         error_lower = error_str.lower()
-        # If it's a data policy error, don't spam logs
+        # If it's a data policy error, provide helpful message
         if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            print(f"Intent classification error: Model requires privacy settings")
+            error_msg = "Model requires OpenRouter privacy settings"
         else:
-            print(f"Intent classification error: {e}")
-    
-    return {"intent": "chat", "params": {}, "explanation": "Could not classify intent"}
+            error_msg = str(e)
+        print(f"[LLM] Intent classification error: {error_msg}")
+        return {
+            "intent": "chat",
+            "params": {},
+            "explanation": "Intent classification failed",
+            "error": error_msg,
+        }
 
 
 def _load_dataframe(data_path: Optional[str], max_rows: Optional[int] = None, sample: bool = False) -> Optional[pd.DataFrame]:
