@@ -6,26 +6,26 @@
   --bg-hover: #eeecea;
   --bg-user-message: #f5f4f2;
   --bg-assistant: #ffffff;
-  
+
   --border: #e5e3df;
   --border-light: #eeecea;
-  
+
   --text-primary: #1a1915;
   --text-secondary: #5d5c59;
   --text-muted: #8b8985;
-  
+
   --accent: #d97757;
   --accent-hover: #c4684a;
   --accent-light: rgba(217, 119, 87, 0.1);
-  
+
   --success: #2e8b57;
   --warning: #d97706;
   --destructive: #dc2626;
-  
+
   --radius: 12px;
   --radius-sm: 8px;
   --radius-lg: 16px;
-  
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
@@ -37,7 +37,8 @@
   padding: 0;
 }
 
-html, body {
+html,
+body {
   height: 100%;
 }
 
@@ -59,21 +60,33 @@ body {
   background: var(--bg-primary);
 }
 
-.app-layout.sidebar-collapsed .sidebar {
-  width: 0;
-  min-width: 0;
-  padding: 0;
-  overflow: hidden;
-  border: none;
-}
+/* Desktop: sidebar visible by default (no class), hidden when collapsed */
+@media (min-width: 1001px) {
 
-.app-layout.sidebar-collapsed .sidebar * {
-  opacity: 0;
-  pointer-events: none;
-}
+  /* Sidebar visible by default (no .sidebar-collapsed class) */
+  .app-layout:not(.sidebar-collapsed) .sidebar {
+    width: 16%;
+    min-width: 150px;
+    max-width: 260px;
+  }
 
-.app-layout.sidebar-collapsed .toggle-sidebar {
-  left: 8px;
+  /* Sidebar hidden when user clicks toggle (collapsed=true) */
+  .app-layout.sidebar-collapsed .sidebar {
+    width: 0;
+    min-width: 0;
+    padding: 0;
+    overflow: hidden;
+    border: none;
+  }
+
+  .app-layout.sidebar-collapsed .sidebar * {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .app-layout.sidebar-collapsed .toggle-sidebar {
+    left: 8px;
+  }
 }
 
 .app-main {
@@ -164,29 +177,33 @@ body {
 
 /* Mobile/Tablet Styles */
 @media (max-width: 1000px) {
+
   /* Sidebar becomes a drawer/overlay */
   .app-layout {
     position: relative;
   }
 
   .sidebar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 50;
-    height: 100%;
-    width: 280px;
-    max-width: 80%;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 50 !important;
+    height: 100% !important;
+    width: 280px !important;
+    min-width: 0 !important;
+    max-width: 80% !important;
     box-shadow: var(--shadow-lg);
-    transform: translateX(0);
+    transform: translateX(-100%) !important;
+    /* Hidden by default on mobile */
+    transition: transform 0.2s ease;
   }
 
+  /* Show sidebar when .sidebar-collapsed IS present (inverted from desktop) */
   .app-layout.sidebar-collapsed .sidebar {
-    transform: translateX(-100%);
-    width: 280px; /* Keep width for animation, just move it */
+    transform: translateX(0) !important;
   }
 
-  /* Overlay backing for sidebar */
+  /* Overlay backing for sidebar - only show when sidebar is open (collapsed=true) */
   .sidebar-overlay {
     position: fixed;
     top: 0;
@@ -195,29 +212,36 @@ body {
     bottom: 0;
     background: rgba(0, 0, 0, 0.3);
     z-index: 40;
-    opacity: 1;
-    transition: opacity 0.2s;
-  }
-  
-  .app-layout.sidebar-collapsed .sidebar-overlay {
-    display: none;
-    pointer-events: none;
     opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    display: block;
+  }
+
+  .app-layout.sidebar-collapsed .sidebar-overlay {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .app-main {
     flex-direction: column;
     padding: 0;
-    height: 100dvh; /* Use dynamic viewport height */
+    height: 100dvh;
+    max-height: 100dvh;
+    /* Use dynamic viewport height */
     overflow: hidden;
   }
 
   /* Panels take full space in tab view */
-  .chat-panel, .data-panel {
-    flex: 1;
+  .chat-panel,
+  .data-panel {
+    flex: 1 1 100%;
     width: 100%;
     max-width: 100%;
-    height: 100%;
+    min-width: 100%;
+    height: calc(100dvh - 50px);
+    /* Full height minus mobile tab nav */
+    max-height: calc(100dvh - 50px);
     border: none;
     border-radius: 0;
   }
@@ -230,9 +254,10 @@ body {
   .toggle-sidebar {
     top: 12px;
     left: 12px;
-    background: white; /* Ensure visibility */
+    background: white;
+    /* Ensure visibility */
   }
-  
+
   .app-layout.sidebar-collapsed .toggle-sidebar {
     left: 12px;
   }
@@ -245,7 +270,8 @@ body {
 
 /* Mobile Tab Navigation */
 .mobile-tab-nav {
-  display: none; /* Hidden on desktop */
+  display: none;
+  /* Hidden on desktop */
 }
 
 @media (max-width: 1000px) {
@@ -428,11 +454,25 @@ body {
   gap: 8px;
 }
 
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.gap-1 { gap: 4px; }
-.text-sm { font-size: 14px; }
-.font-medium { font-weight: 500; }
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.gap-1 {
+  gap: 4px;
+}
+
+.text-sm {
+  font-size: 14px;
+}
+
+.font-medium {
+  font-weight: 500;
+}
 
 /* Chat Panel */
 .chat-panel {
@@ -506,13 +546,14 @@ body {
 }
 
 @keyframes slideIn {
-  from { 
-    opacity: 0; 
-    transform: translateY(4px); 
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
-  to { 
-    opacity: 1; 
-    transform: translateY(0); 
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -572,7 +613,8 @@ body {
   margin-bottom: 0;
 }
 
-.message-text ul, .message-text ol {
+.message-text ul,
+.message-text ol {
   margin-bottom: 12px;
   padding-left: 24px;
 }
@@ -735,19 +777,19 @@ body {
   min-height: 0;
 }
 
-.data-panel > .card {
+.data-panel>.card {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.data-panel > .card:first-child {
+.data-panel>.card:first-child {
   flex: 1;
   min-height: 0;
 }
 
-.data-panel > .card:last-child:not(:first-child) {
+.data-panel>.card:last-child:not(:first-child) {
   flex: 0 0 auto;
   max-height: 200px;
 }
@@ -781,10 +823,12 @@ body {
   flex-wrap: wrap;
   margin: 8px 0 12px;
 }
+
 .quick-actions .quick-label {
   font-size: 14px;
   color: var(--text-secondary);
 }
+
 .quick-actions .chips {
   display: flex;
   gap: 8px;
@@ -797,6 +841,7 @@ body {
   flex-wrap: wrap;
   margin-bottom: 12px;
 }
+
 .column-chip {
   text-transform: none;
 }
@@ -985,8 +1030,13 @@ body {
 
 /* Spinning animation for processing */
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .btn svg:first-child {

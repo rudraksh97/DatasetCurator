@@ -41,7 +41,7 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME_MESSAGE]);
   const [inputMessage, setInputMessage] = useState("");
   const [activeSession, setActiveSession] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [chatWidth, setChatWidth] = useState(40);
   const [isResizing, setIsResizing] = useState(false);
   const [pendingQueue, setPendingQueue] = useState<string[]>([]);
@@ -99,12 +99,7 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  // Auto-collapse sidebar on mobile
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.innerWidth < 1000) {
-      setSidebarCollapsed(true);
-    }
-  }, []);
+
 
   // Load saved LLM model preference and available models
   useEffect(() => {
