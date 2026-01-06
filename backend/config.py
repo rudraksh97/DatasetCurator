@@ -76,16 +76,51 @@ class DataLoaderSettings:
 
 @dataclass(frozen=True)
 class StorageSettings:
-    """File storage configuration."""
+    """File storage configuration.
+    
+    Supports two backends:
+    - local: Uses local filesystem (for development)
+    - s3: Uses AWS S3 (for production on Render)
+    """
+    backend: str = field(default_factory=lambda: _get_env("STORAGE_BACKEND", "local"))
+    
+    # Local storage paths (used when backend="local")
     raw_path: Path = field(default_factory=lambda: Path(_get_env("RAW_STORAGE_PATH", "storage/raw")))
     curated_path: Path = field(default_factory=lambda: Path(_get_env("CURATED_STORAGE_PATH", "storage/curated")))
     
+    # S3 configuration (used when backend="s3")
+    s3_bucket: str = field(default_factory=lambda: _get_env("S3_BUCKET", ""))
+    s3_region: str = field(default_factory=lambda: _get_env("S3_REGION", "us-east-1"))
+    aws_access_key_id: str = field(default_factory=lambda: _get_env("AWS_ACCESS_KEY_ID", ""))
+    aws_secret_access_key: str = field(default_factory=lambda: _get_env("AWS_SECRET_ACCESS_KEY", ""))
+    
+    # Prefixes for raw and curated data in S3
+    raw_prefix: str = "raw"
+    curated_prefix: str = "curated"
+    
     def __post_init__(self):
-        """Ensure storage directories exist."""
-        object.__setattr__(self, 'raw_path', Path(self.raw_path))
-        object.__setattr__(self, 'curated_path', Path(self.curated_path))
-        self.raw_path.mkdir(parents=True, exist_ok=True)
-        self.curated_path.mkdir(parents=True, exist_ok=True)
+        """Ensure storage directories exist for local backend."""
+        if self.backend == "local":
+            object.__setattr__(self, 'raw_path', Path(self.raw_path))
+            object.__setattr__(self, 'curated_path', Path(self.curated_path))
+            self.raw_path.mkdir(parents=True, exist_ok=True)
+            self.curated_path.mkdir(parents=True, exist_ok=True)
+    
+    @property
+    def is_s3(self) -> bool:
+        """Check if using S3 backend."""
+        return self.backend.lower() == "s3"
+    
+    def validate_s3(self) -> None:
+        """Validate S3 configuration.
+        
+        Raises:
+            ValueError: If S3 is configured but bucket is missing.
+        """
+        if self.is_s3 and not self.s3_bucket:
+            raise ValueError(
+                "S3_BUCKET environment variable is required when STORAGE_BACKEND=s3"
+            )
 
 
 @dataclass(frozen=True)

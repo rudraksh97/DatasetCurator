@@ -29,6 +29,7 @@ from orchestrator.workflow import (
 from repositories.dataset import DatasetRepository
 from services.llm import ChatService, IntentClassifierService
 from services.llm.client import LLMRateLimitError, LLMAPIError, FREE_LLM_MODELS
+from services.storage import get_storage, S3Storage
 
 router = APIRouter()
 
@@ -164,14 +165,24 @@ async def upload_dataset(
     """
     from orchestrator.workflow import process_upload
     
-    target_dir = settings.storage.raw_path
-    target_path = target_dir / f"{dataset_id}_{file.filename}"
+    storage = get_storage()
+    
+    # Generate storage path
+    if settings.storage.is_s3:
+        # S3: use prefix-based paths
+        raw_path = f"{settings.storage.raw_prefix}/{dataset_id}_{file.filename}"
+    else:
+        # Local: use local path
+        raw_path = f"raw/{dataset_id}_{file.filename}"
     
     content = await file.read()
-    target_path.write_bytes(content)
+    await storage.write_file(raw_path, content)
     
-    if not target_path.exists():
-        raise HTTPException(status_code=400, detail="Failed to save file")
+    # For processing, we need the full path or key
+    if settings.storage.is_s3:
+        target_path = raw_path  # S3 key
+    else:
+        target_path = settings.storage.raw_path / f"{dataset_id}_{file.filename}"
 
     state = await process_upload(session, dataset_id, target_path)
     
@@ -311,7 +322,7 @@ async def download_file(
     dataset_id: str,
     version: int | None = None,
     session: AsyncSession = Depends(get_session),
-) -> FileResponse:
+):
     """Download the processed dataset file.
     
     Args:
@@ -320,12 +331,16 @@ async def download_file(
         session: Database session.
     
     Returns:
-        FileResponse with the CSV file.
+        FileResponse for local storage, or RedirectResponse for S3 presigned URL.
     
     Raises:
         HTTPException: If dataset or file is not found.
     """
+    from fastapi.responses import RedirectResponse, StreamingResponse
+    import io
+    
     repo = DatasetRepository(session)
+    storage = get_storage()
     
     try:
         state = await repo.get(dataset_id)
@@ -334,21 +349,42 @@ async def download_file(
 
     if version is not None:
         # Download specific version
-        path = CURATED_STORAGE / f"{dataset_id}_v{version}.csv"
-        if not path.exists():
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Version {version} not found. Use /versions/{dataset_id} to see available versions."
-            )
+        if settings.storage.is_s3:
+            file_key = f"{settings.storage.curated_prefix}/{dataset_id}_v{version}.csv"
+        else:
+            file_key = f"curated/{dataset_id}_v{version}.csv"
+        filename = f"{dataset_id}_v{version}.csv"
     else:
         # Download latest version
         if not state.curated_path:
             raise HTTPException(status_code=404, detail="No processed file available")
-        path = Path(state.curated_path)
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="File not found on disk")
+        file_key = state.curated_path
+        filename = Path(file_key).name if "/" in file_key else file_key
 
-    return FileResponse(path, media_type="text/csv", filename=path.name)
+    # Check if file exists
+    if not await storage.exists(file_key):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"File not found. Use /versions/{dataset_id} to see available versions."
+        )
+    
+    # Handle S3 storage - use presigned URL redirect
+    if settings.storage.is_s3 and isinstance(storage, S3Storage):
+        presigned_url = storage.generate_presigned_url(file_key, expires_in=300)
+        return RedirectResponse(url=presigned_url, status_code=307)
+    
+    # Handle local storage - use FileResponse
+    local_path = storage.get_local_path(file_key)
+    if local_path and local_path.exists():
+        return FileResponse(local_path, media_type="text/csv", filename=filename)
+    
+    # Fallback: stream from storage
+    content = await storage.read_file(file_key)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 class ChatHandler:

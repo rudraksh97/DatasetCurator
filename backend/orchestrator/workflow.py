@@ -27,11 +27,12 @@ from config import settings
 from models.dataset_state import DatasetState
 from repositories.dataset import DatasetRepository
 from services.llm.planner import create_execution_plan
+from services.storage import get_storage
 
 
-# Re-export storage paths for backward compatibility
-RAW_STORAGE = settings.storage.raw_path
-CURATED_STORAGE = settings.storage.curated_path
+# Re-export storage paths for backward compatibility (local storage only)
+RAW_STORAGE = settings.storage.raw_path if not settings.storage.is_s3 else None
+CURATED_STORAGE = settings.storage.curated_path if not settings.storage.is_s3 else None
 
 
 # ============================================================================
@@ -146,14 +147,14 @@ async def upsert_dataset_state(session: AsyncSession, state: DatasetState) -> Da
 async def process_upload(
     session: AsyncSession,
     dataset_id: str,
-    source_path: Path,
+    source_path,
 ) -> DatasetState:
     """Process an uploaded dataset: analyze schema and create curated copy.
     
     Args:
         session: Database session.
         dataset_id: Unique dataset identifier.
-        source_path: Path to uploaded file.
+        source_path: Path to uploaded file (Path for local, str key for S3).
     
     Returns:
         Created DatasetState.
@@ -161,22 +162,36 @@ async def process_upload(
     Raises:
         ValueError: If processing fails.
     """
+    import io
+    
+    storage = get_storage()
     state = DatasetState(dataset_id=dataset_id, raw_path=str(source_path))
     
-    # Analyze schema
+    # Read data for schema analysis
     try:
-        df = pd.read_csv(source_path, nrows=2000)
+        if settings.storage.is_s3:
+            content = await storage.read_file(str(source_path))
+            df = pd.read_csv(io.BytesIO(content), nrows=2000)
+        else:
+            df = pd.read_csv(source_path, nrows=2000)
         state.schema = {col: str(dtype) for col, dtype in df.dtypes.items()}
     except Exception as e:
         print(f"[Upload] Warning: Could not analyze schema for {dataset_id}: {e}")
         state.schema = None
 
     # Create curated copy
-    curated_path = CURATED_STORAGE / f"{dataset_id}_v1.csv"
     try:
-        df_full = pd.read_csv(source_path)
-        df_full.to_csv(curated_path, index=False)
-        state.curated_path = str(curated_path)
+        if settings.storage.is_s3:
+            content = await storage.read_file(str(source_path))
+            df_full = pd.read_csv(io.BytesIO(content))
+            curated_key = f"{settings.storage.curated_prefix}/{dataset_id}_v1.csv"
+            await storage.write_csv(curated_key, df_full)
+            state.curated_path = curated_key
+        else:
+            curated_path = settings.storage.curated_path / f"{dataset_id}_v1.csv"
+            df_full = pd.read_csv(source_path)
+            df_full.to_csv(curated_path, index=False)
+            state.curated_path = str(curated_path)
         state.current_version = 1
     except Exception as e:
         print(f"[Upload] Error: Could not create curated copy for {dataset_id}: {e}")
@@ -220,10 +235,25 @@ async def plan_node(state: TransformationState) -> TransformationState:
     }
 
 
-def load_data_node(state: TransformationState) -> TransformationState:
-    """Load DataFrame from path."""
+async def load_data_node(state: TransformationState) -> TransformationState:
+    """Load DataFrame from path (supports both local and S3)."""
+    import io
+    
     try:
-        df = pd.read_csv(state["data_path"])
+        storage = get_storage()
+        data_path = state["data_path"]
+        
+        if settings.storage.is_s3:
+            # Read from S3
+            content = await storage.read_file(data_path)
+            df = pd.read_csv(io.BytesIO(content))
+        else:
+            # Check if it's already a Path or string
+            if hasattr(data_path, 'exists'):
+                df = pd.read_csv(data_path)
+            else:
+                df = pd.read_csv(data_path)
+        
         return {**state, "df": df, "error_message": ""}
     except Exception as e:
         return {**state, "df": None, "error_message": f"Failed to load data: {str(e)}"}
