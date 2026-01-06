@@ -6,6 +6,7 @@ about datasets, using function calling for data queries.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -209,7 +210,19 @@ class ChatService:
             if not message.content and not message.tool_calls:
                 print("[Chat] Empty response with no tools, retrying without function calling...")
                 return await self._chat_without_tools(df, user_message, context, session, dataset_id, data_path)
-            
+
+            # If the model returned a text-based function call instead of tool_calls, try to execute it
+            if message.content and not message.tool_calls:
+                parsed = self._parse_text_function_call(message.content)
+                if parsed:
+                    func_name, func_args = parsed
+                    try:
+                        result = self._query_registry.execute(df, func_name, func_args)
+                        return self._format_function_result(func_name, result)
+                    except Exception as e:
+                        print(f"[Chat] Text function execution error: {e}")
+                        # fall through to tool path / fallback
+
             message = await self._execute_tool_calls(df, message, messages)
             
             if message.content:
@@ -277,6 +290,58 @@ class ChatService:
             message = response.choices[0].message
         
         return message
+
+    def _parse_text_function_call(self, content: str) -> Optional[tuple[str, Dict[str, Any]]]:
+        """Parse text-based function call like <function group_by{...}></function>."""
+        match = re.search(r"<function\\s+([^\\s{>]+)\\s*(\\{.*?\\})\\s*</function>", content, re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        raw_name = match.group(1)
+        args_str = match.group(2)
+
+        # Normalize common Cyrillic lookalikes to Latin
+        cyr_map = {
+            "р": "p",
+            "у": "y",
+            "о": "o",
+            "а": "a",
+            "е": "e",
+            "с": "c",
+            "х": "x",
+            "н": "n",
+            "п": "p",
+            "г": "g",
+            "и": "i",
+            "б": "b",
+        }
+        norm_name = raw_name
+        for c, l in cyr_map.items():
+            norm_name = norm_name.replace(c, l).replace(c.upper(), l.upper())
+        norm_name = norm_name.lower()
+
+        # simple alias map
+        aliases = {
+            "group_by": "group_by",
+            "groupby": "group_by",
+        }
+        func_name = aliases.get(norm_name, norm_name)
+
+        try:
+            func_args = json.loads(args_str)
+        except json.JSONDecodeError:
+            print(f"[Chat] Failed to parse function args from text: {args_str}")
+            return None
+        return func_name, func_args
+
+    def _format_function_result(self, func_name: str, result: Any) -> str:
+        """Basic formatter for function results."""
+        if isinstance(result, dict):
+            result_str = json.dumps(result, indent=2, default=str)
+        elif isinstance(result, (list, tuple)):
+            result_str = json.dumps(result, indent=2, default=str)
+        else:
+            result_str = str(result)
+        return f"Result of {func_name}:\n{result_str}"
     
     async def _chat_without_tools(
         self,
