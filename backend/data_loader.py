@@ -285,40 +285,30 @@ def get_random_sample_chunked(
     Returns:
         DataFrame with n random rows.
     """
-    try:
-        # For large files, use reservoir sampling approach
-        import random
-        samples = []
-        seen = 0
+    import random
+    samples = []
+    seen = 0
+    
+    for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE):
+        # Apply filter if needed
+        if filter_column and filter_value:
+            if filter_column in chunk.columns:
+                chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
         
-        for chunk in pd.read_csv(file_path, chunksize=CHUNK_SIZE):
-            # Apply filter if needed
-            if filter_column and filter_value:
-                if filter_column in chunk.columns:
-                    chunk = chunk[chunk[filter_column].astype(str).str.lower() == str(filter_value).lower()]
-            
-            if len(chunk) == 0:
-                continue
-            
-            # Reservoir sampling: randomly replace samples as we see more data
-            for _, row in chunk.iterrows():
-                seen += 1
-                if len(samples) < n:
-                    samples.append(row)
-                else:
-                    # Randomly replace with probability n/seen
-                    j = random.randint(0, seen - 1)
-                    if j < n:
-                        samples[j] = row
+        if len(chunk) == 0:
+            continue
         
-        if samples:
-            return pd.DataFrame(samples)
-        return pd.DataFrame()
-        
-    except Exception as e:
-        print(f"[DataLoader] Error sampling: {e}")
-        # Fallback: load sample and filter
-        df = load_dataframe_smart(file_path, max_rows=SAMPLE_SIZE, sample=True)
-        if filter_column and filter_value and filter_column in df.columns:
-            df = df[df[filter_column].astype(str).str.lower() == str(filter_value).lower()]
-        return df.sample(n=min(n, len(df))) if len(df) > 0 else pd.DataFrame()
+        # Reservoir sampling: randomly replace samples as we see more data
+        for _, row in chunk.iterrows():
+            seen += 1
+            if len(samples) < n:
+                samples.append(row)
+            else:
+                # Randomly replace with probability n/seen
+                j = random.randint(0, seen - 1)
+                if j < n:
+                    samples[j] = row
+    
+    if samples:
+        return pd.DataFrame(samples)
+    return pd.DataFrame()

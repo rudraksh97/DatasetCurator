@@ -543,37 +543,3 @@ async def execute_transformation(
     )
 
 
-# ============================================================================
-# Legacy Orchestrator Class (for backwards compatibility)
-# ============================================================================
-
-class Orchestrator:
-    """Dataset orchestrator - wraps workflow functions for backwards compatibility."""
-    
-    def __init__(
-        self,
-        raw_storage: Path = RAW_STORAGE,
-        curated_storage: Path = CURATED_STORAGE
-    ) -> None:
-        self.raw_storage = raw_storage
-        self.curated_storage = curated_storage
-        self.raw_storage.mkdir(parents=True, exist_ok=True)
-        self.curated_storage.mkdir(parents=True, exist_ok=True)
-
-    async def run_pipeline(
-        self,
-        session: AsyncSession,
-        dataset_id: str,
-        source_path: Path,
-        approved_fixes: Optional[List[Dict]] = None,
-    ) -> DatasetState:
-        """Run upload pipeline."""
-        return await process_upload(session, dataset_id, source_path)
-
-    async def _get_state(self, session: AsyncSession, dataset_id: str) -> DatasetState:
-        """Get dataset state."""
-        return await get_dataset_state(session, dataset_id)
-
-    async def _upsert_state(self, session: AsyncSession, state: DatasetState) -> DatasetState:
-        """Update dataset state."""
-        return await upsert_dataset_state(session, state)

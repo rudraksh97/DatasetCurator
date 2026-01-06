@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_session, AsyncSessionLocal
 from orchestrator.workflow import (
-    Orchestrator,
+    process_upload,
+    get_dataset_state,
+    upsert_dataset_state,
     execute_transformation,
     CURATED_STORAGE,
 )
@@ -27,7 +29,6 @@ from llm import classify_intent, chat_with_agent
 from embeddings import embed_dataset
 
 router = APIRouter()
-orchestrator = Orchestrator()
 
 
 class ChatMessageRequest(BaseModel):
@@ -155,7 +156,7 @@ async def upload_dataset(
     if not target_path.exists():
         raise HTTPException(status_code=400, detail="Failed to save file")
 
-    state = await orchestrator.run_pipeline(session, dataset_id, target_path)
+    state = await process_upload(session, dataset_id, target_path)
     
     # Get actual row and column counts from the full file
     df = pd.read_csv(target_path)
@@ -201,7 +202,7 @@ async def get_preview(
         HTTPException: If dataset is not found.
     """
     try:
-        state = await orchestrator._get_state(session, dataset_id)
+        state = await get_dataset_state(session, dataset_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -221,12 +222,9 @@ async def get_preview(
     
     preview_data = _preview_df(Path(data_path), page=page, page_size=page_size)
     
-    # Get column count
-    try:
-        df = pd.read_csv(Path(data_path), nrows=1)
-        column_count = len(df.columns)
-    except Exception:
-        column_count = 0
+    # Get column count from the first row
+    df_header = pd.read_csv(Path(data_path), nrows=1)
+    column_count = len(df_header.columns)
     
     return {
         "dataset_id": dataset_id,
@@ -258,7 +256,7 @@ async def download_file(
         HTTPException: If dataset or file is not found.
     """
     try:
-        state = await orchestrator._get_state(session, dataset_id)
+        state = await get_dataset_state(session, dataset_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
@@ -293,7 +291,7 @@ async def chat(
     
     # Get existing state
     try:
-        state = await orchestrator._get_state(session, dataset_id)
+        state = await get_dataset_state(session, dataset_id)
         has_data = bool(state.curated_path or state.raw_path)
         columns = list(state.schema.keys()) if state.schema else []
     except ValueError:
@@ -351,18 +349,15 @@ async def chat(
             context = {"columns": columns}
             history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
             data_path = state.curated_path or state.raw_path
-            try:
-                response = await chat_with_agent(
-                    user_msg, data_path=data_path, context=context, history=history,
-                    session=session, dataset_id=dataset_id
-                )
-            except Exception as e:
-                response = f"Error: {str(e)}\n\nTry: *'show data'* or *'remove column X'*"
+            response = await chat_with_agent(
+                user_msg, data_path=data_path, context=context, history=history,
+                session=session, dataset_id=dataset_id
+            )
 
     # Save chat history
     if state:
         state.chat_history.append({"role": "user", "content": user_msg, "timestamp": timestamp})
         state.chat_history.append({"role": "assistant", "content": response, "timestamp": timestamp})
-        await orchestrator._upsert_state(session, state)
+        await upsert_dataset_state(session, state)
 
     return ChatResponse(user_message=user_msg, assistant_message=response)

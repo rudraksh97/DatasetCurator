@@ -138,12 +138,18 @@ class DataOperator:
                 value = self.df[col].median()
             elif method == "mode" and col:
                 value = self.df[col].mode().iloc[0] if not self.df[col].mode().empty else None
-            elif method in ["ffill", "bfill"]:
+            elif method == "ffill":
                 if col:
-                    self.df[col] = self.df[col].fillna(method=method)
+                    self.df[col] = self.df[col].ffill()
                 else:
-                    self.df = self.df.fillna(method=method)
-                return f"Filled nulls using {method}."
+                    self.df = self.df.ffill()
+                return f"Filled nulls using forward fill."
+            elif method == "bfill":
+                if col:
+                    self.df[col] = self.df[col].bfill()
+                else:
+                    self.df = self.df.bfill()
+                return f"Filled nulls using backward fill."
         
         if col:
             count = self.df[col].isna().sum()

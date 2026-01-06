@@ -20,6 +20,11 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 DEFAULT_MODEL = os.getenv("DEFAULT_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
+# Query/sampling limits (configurable via environment)
+LARGE_DATASET_SAMPLE_SIZE = int(os.getenv("LARGE_DATASET_SAMPLE_SIZE", "10000"))
+SEARCH_RESULT_LIMIT = int(os.getenv("SEARCH_RESULT_LIMIT", "5"))
+MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "10"))
+
 # ---- Types -----------------------------------------------------------------
 Message = Dict[str, Any]
 
@@ -226,31 +231,15 @@ async def create_execution_plan(
         {"role": "user", "content": user_message},
     ]
     
-    try:
-        response = await chat_completion(messages, temperature=0.1, max_tokens=1000)
-        result = _parse_json_response(response)
-        if result and "steps" in result:
-            return result
-        # LLM returned invalid/unparseable response
-        return {
-            "is_multi_step": False,
-            "steps": [],
-            "error": "Failed to parse execution plan from LLM response",
-        }
-    except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, provide helpful message
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            error_msg = "Model requires OpenRouter privacy settings. Visit https://openrouter.ai/settings/privacy"
-        else:
-            error_msg = f"Planning failed: {error_str}"
-        print(f"[LLM] Planning error: {error_msg}")
-        return {
-            "is_multi_step": False,
-            "steps": [],
-            "error": error_msg,
-        }
+    response = await chat_completion(messages, temperature=0.1, max_tokens=1000)
+    result = _parse_json_response(response)
+    if result and "steps" in result:
+        return result
+    return {
+        "is_multi_step": False,
+        "steps": [],
+        "error": "Failed to parse execution plan from LLM response",
+    }
 
 # ---- Prompts ---------------------------------------------------------------
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
@@ -529,56 +518,27 @@ async def classify_intent(
         {"role": "user", "content": user_message},
     ]
     
-    try:
-        response = await chat_completion(messages, temperature=0.1, max_tokens=500)
-        result = _parse_json_response(response)
-        if result and "intent" in result:
-            return result
-        # LLM returned invalid/unparseable response
-        return {
-            "intent": "chat",
-            "params": {},
-            "explanation": "Failed to parse intent from LLM response",
-            "error": "Invalid LLM response format",
-        }
-    except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, provide helpful message
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            error_msg = "Model requires OpenRouter privacy settings"
-        else:
-            error_msg = str(e)
-        print(f"[LLM] Intent classification error: {error_msg}")
-        return {
-            "intent": "chat",
-            "params": {},
-            "explanation": "Intent classification failed",
-            "error": error_msg,
-        }
+    response = await chat_completion(messages, temperature=0.1, max_tokens=500)
+    result = _parse_json_response(response)
+    if result and "intent" in result:
+        return result
+    return {
+        "intent": "chat",
+        "params": {},
+        "explanation": "Failed to parse intent from LLM response",
+        "error": "Invalid LLM response format",
+    }
 
 
 def _load_dataframe(data_path: Optional[str], max_rows: Optional[int] = None, sample: bool = False) -> Optional[pd.DataFrame]:
     """Load DataFrame from path with smart handling for large files."""
     if not data_path:
         return None
-    try:
-        from data_loader import load_dataframe_smart
-        path = Path(data_path)
-        if path.exists():
-            return load_dataframe_smart(path, max_rows=max_rows, sample=sample)
-    except Exception as e:
-        print(f"[LLM] Error loading dataframe: {e}")
-        # Fallback to basic loading
-        try:
-            path = Path(data_path)
-            if path.exists():
-                if max_rows:
-                    return pd.read_csv(path, nrows=max_rows)
-                return pd.read_csv(path)
-        except Exception:
-            pass
-    return None
+    from data_loader import load_dataframe_smart
+    path = Path(data_path)
+    if not path.exists():
+        return None
+    return load_dataframe_smart(path, max_rows=max_rows, sample=sample)
 
 
 def _convert_to_native_type(value: Any) -> Any:
@@ -1096,7 +1056,7 @@ Examples:
             
         elif query_type == "search" and column and value:
             # For search, we need to load some data - use sampling for large files
-            search_df = df if df is not None else _load_dataframe(data_path, max_rows=10000, sample=True)
+            search_df = df if df is not None else _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE, sample=True)
             if search_df is not None and column in search_df.columns:
                 matches = search_df[search_df[column].astype(str).str.lower().str.contains(str(value).lower(), na=False)]
                 if len(matches) > 0:
@@ -1113,15 +1073,8 @@ Examples:
             return f"DATASET INFO{info_note}: {row_count} rows, {len(columns)} columns\nColumns: {', '.join(columns)}"
             
     except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, return None to trigger fallback
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            print(f"[Chat] Query interpretation failed: Model requires privacy settings")
-        else:
-            print(f"[Chat] Query interpretation failed: {e}")
-    
-    return None
+        print(f"[Chat] Query interpretation failed: {e}")
+        return None
 
 
 async def _chat_without_tools(
@@ -1155,7 +1108,7 @@ async def _chat_without_tools(
             from embeddings import semantic_search, has_embeddings
             if await has_embeddings(session, dataset_id):
                 print(f"[Chat] Using semantic search for: {user_message[:50]}...")
-                results = await semantic_search(session, dataset_id, user_message, limit=5)
+                results = await semantic_search(session, dataset_id, user_message, limit=SEARCH_RESULT_LIMIT)
                 if results:
                     query_results = "SEMANTICALLY RELEVANT RESULTS:\n"
                     for i, r in enumerate(results, 1):
@@ -1201,16 +1154,7 @@ RULES:
         {"role": "user", "content": user_message}
     ]
     
-    try:
-        return await chat_completion(messages, temperature=0.3)
-    except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, return helpful message
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            return "**Configuration required:** This model requires OpenRouter privacy settings to be configured. Please visit https://openrouter.ai/settings/privacy to enable free model publication, or try a different model."
-        # Otherwise return a generic error
-        return f"**Error:** Unable to process your request. Please try again or check your OpenRouter configuration."
+    return await chat_completion(messages, temperature=0.3)
 
 
 async def _classify_query_type(user_message: str, columns: List[str]) -> str:
@@ -1245,19 +1189,9 @@ Examples:
         {"role": "user", "content": user_message}
     ]
     
-    try:
-        response = await chat_completion(messages, temperature=0, max_tokens=10)
-        result = response.strip().lower()
-        return "data" if "data" in result else "general"
-    except Exception as e:
-        error_str = str(e)
-        error_lower = error_str.lower()
-        # If it's a data policy error, don't spam logs - just default to data
-        if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-            print(f"[Chat] Query classification error: Model requires privacy settings, defaulting to data")
-        else:
-            print(f"[Chat] Query classification error: {e}, defaulting to data")
-        return "data"  # Default to data query if classification fails
+    response = await chat_completion(messages, temperature=0, max_tokens=10)
+    result = response.strip().lower()
+    return "data" if "data" in result else "general"
 
 
 async def chat_with_agent(
@@ -1278,7 +1212,7 @@ async def chat_with_agent(
         is_large, _ = is_large_dataset(path)
     
     # For large datasets, only load a sample (chunked operations will handle full queries)
-    df = _load_dataframe(data_path, max_rows=10000 if is_large else None, sample=is_large)
+    df = _load_dataframe(data_path, max_rows=LARGE_DATASET_SAMPLE_SIZE if is_large else None, sample=is_large)
     columns = context.get("columns", []) if context else []
     if df is not None and not columns:
         columns = list(df.columns)
@@ -1328,11 +1262,10 @@ If they ask what you can do, mention: searching data, getting statistics, findin
                 print("[Chat] Empty response with no tools, retrying without function calling...")
                 return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
             
-            max_iterations = 10  # Prevent infinite loops
             iteration = 0
             
             # Handle function calls
-            while message.tool_calls and iteration < max_iterations:
+            while message.tool_calls and iteration < MAX_TOOL_ITERATIONS:
                 iteration += 1
                 messages.append(message)
                 
@@ -1374,32 +1307,15 @@ If they ask what you can do, mention: searching data, getting statistics, findin
                 return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
                 
         except Exception as e:
-            error_str = str(e)
-            error_lower = error_str.lower()
-            print(f"[Chat] Error: {error_str}")
+            error_str = str(e).lower()
+            print(f"[Chat] Error: {e}")
             
-            # Handle rate limit errors
-            if "rate limit" in error_lower or "429" in error_str:
-                return "**Rate limit reached.** The AI service is temporarily unavailable. Please try again in a few minutes."
-            
-            # Check for data policy errors (OpenRouter requires privacy settings)
-            if "data policy" in error_lower or ("404" in error_str and "privacy" in error_lower):
-                return "**Configuration required:** This model requires OpenRouter privacy settings to be configured. Please visit https://openrouter.ai/settings/privacy to enable free model publication, or try a different model."
-            
-            # Check for tool/function calling errors (OpenRouter 404, tool use errors, etc.)
-            tool_error_indicators = [
-                "tool use" in error_lower,
-                "tools" in error_lower,
-                "function" in error_lower,
-                "404" in error_str and ("endpoint" in error_lower or "tool" in error_lower),
-                "no endpoints found" in error_lower,
-            ]
-            
-            if any(tool_error_indicators):
+            # Check for tool/function calling errors - fall back to non-tool chat
+            if any(indicator in error_str for indicator in ["tool", "function", "no endpoints found"]):
                 print("[Chat] Tool calling not supported, falling back to non-tool chat...")
                 return await _chat_without_tools(df, user_message, context, session, dataset_id, data_path)
             
-            return f"Error processing request: {error_str}"
+            raise
     else:
         # No data available, use regular chat
         return await chat_completion(messages, temperature=0.7)
