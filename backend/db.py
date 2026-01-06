@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import AsyncIterator, Optional
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -35,7 +36,11 @@ def get_engine() -> AsyncEngine:
         ValueError: If DATABASE_URL is not configured.
     """
     settings.database.validate()
-    return create_async_engine(settings.database.url, echo=False, future=True)
+    # Ensure we use the asyncpg driver even if DATABASE_URL uses 'postgres://'
+    db_url = make_url(str(settings.database.url))
+    if not db_url.drivername.startswith("postgresql+"):
+        db_url = db_url.set(drivername="postgresql+asyncpg")
+    return create_async_engine(db_url, echo=False, future=True)
 
 
 # Lazy initialization - only create when first accessed
