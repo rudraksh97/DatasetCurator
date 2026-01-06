@@ -340,7 +340,21 @@ class ChatHandler:
                 state.curated_path = str(new_path)
                 state.current_version = version
             
-            return final_message + f"\n\n**Preview:**\n\n{_df_to_markdown(final_df, 5)}"
+            # Show more rows for small results, paginate for larger ones
+            total_rows = len(final_df)
+            if total_rows <= 20:
+                # Small result - show all rows
+                preview = _df_to_markdown(final_df, total_rows)
+            elif total_rows <= 100:
+                # Medium result - show first 20 with note
+                preview = _df_to_markdown(final_df, 20)
+                preview += f"\n\n*Showing 20 of {total_rows} rows*"
+            else:
+                # Large result - show first 10 with note
+                preview = _df_to_markdown(final_df, 10)
+                preview += f"\n\n*Showing 10 of {total_rows} rows. Check the Data Preview panel for full paginated view.*"
+            
+            return final_message + f"\n\n**Preview:**\n\n{preview}"
         
         return final_message if final_message else "I couldn't understand your transformation request."
     

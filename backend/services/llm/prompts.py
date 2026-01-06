@@ -61,8 +61,14 @@ VALIDATION_OPS = [
     "quarantine_rows",  # Base: quarantine_rows
 ]
 
+# Analysis Primitives
+ANALYSIS_OPS = [
+    "detect_outliers",  # Find outlier rows using IQR, z-score, or custom bounds
+    "get_statistics",   # Get detailed column or dataset statistics
+]
+
 # All operations (flat list for backward compatibility)
-DATA_OPERATIONS = ROW_FILTER_OPS + ROW_MAP_OPS + COLUMN_OPS + DATASET_OPS + GROUPING_OPS + VALIDATION_OPS
+DATA_OPERATIONS = ROW_FILTER_OPS + ROW_MAP_OPS + COLUMN_OPS + DATASET_OPS + GROUPING_OPS + VALIDATION_OPS + ANALYSIS_OPS
 
 
 PLANNER_SYSTEM_TEMPLATE = """You are a dataset transformation planner. Break down user requests into atomic operations.
@@ -133,6 +139,16 @@ VALIDATION & QUALITY:
 - quarantine_rows (invalid format): {{"column": "email", "condition": "regex", "pattern": "^[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+$"}}
 - quarantine_rows (bad values): {{"column": "status", "condition": "values", "values": ["INVALID", "ERROR"]}}
 
+ANALYSIS OPERATIONS:
+- detect_outliers (IQR method): {{"column": "score", "method": "iqr", "threshold": 1.5}} - finds values outside Q1-1.5*IQR to Q3+1.5*IQR
+- detect_outliers (Z-score): {{"column": "score", "method": "zscore", "threshold": 3}} - finds values > 3 std from mean
+- detect_outliers (custom bounds): {{"column": "score", "method": "custom", "min": 0, "max": 100}} - custom range
+- get_statistics: {{"column": "score"}} - get detailed stats (mean, std, quartiles, IQR, etc.)
+- get_statistics (dataset): {{}} - get overall dataset stats
+
+USE detect_outliers for: "find outliers", "show outliers", "what are the outliers", "extreme values"
+The result will show ONLY the outlier rows (filtered view).
+
 Available columns: {columns}
 
 CRITICAL: Categorize the ENTIRE request as either:
@@ -147,25 +163,28 @@ Respond with ONLY valid JSON:
 
 INTENT_SYSTEM_TEMPLATE = """You are an intent classifier for a dataset curator application.
 
-IMPORTANT: Distinguish between QUESTIONS and COMMANDS!
-- QUESTIONS about data should be "chat" (user wants information, not changes)
-- COMMANDS to modify data should be "transform_data" (user wants to change the data)
-
 Classify the user's message into ONE of these intents:
 
-1. "transform_data" - User gives a COMMAND to MODIFY data (single OR multiple operations)
-   - Examples: "remove column X", "drop nulls and sort by date", "clean the data"
-2. "chat" - Everything else: QUESTIONS about data, show data requests, general conversation
+1. "transform_data" - User wants to MODIFY, ANALYZE, or AGGREGATE data
+   - Modifications: "remove column X", "drop nulls", "clean the data", "fill missing values"
+   - Aggregations: "average X by Y", "group by X", "count by category", "sum of X per Y"
+   - Analysis: "statistics by group", "breakdown by X", "compare X across Y"
+   
+2. "chat" - Simple questions that don't require data processing
+   - Metadata: "how many rows?", "what columns?", "list columns"
+   - Simple lookups: "show me a random row", "are there nulls?"
+   - General: greetings, thanks, questions about the tool
 
-CRITICAL DISTINCTION:
-- "are there any nulls?" → chat (asking a QUESTION)
-- "remove the nulls" → transform_data (giving a COMMAND)
-- "how many rows?" → chat (QUESTION)
-- "delete rows where X > 10" → transform_data (COMMAND)
-- "what columns do I have?" → chat (QUESTION)
-- "drop column X" → transform_data (COMMAND)
-- "check for duplicates" → chat (QUESTION - they want to know, not delete)
-- "remove duplicates" → transform_data (COMMAND)
+CRITICAL: Complex aggregations/analysis should be "transform_data" (they need planning):
+- "average study_hours by course" → transform_data (aggregation needs planning)
+- "group by gender and count" → transform_data (aggregation needs planning)
+- "statistics for each category" → transform_data (multi-step analysis)
+- "breakdown of scores by difficulty" → transform_data (aggregation)
+
+Simple questions stay as "chat":
+- "how many rows?" → chat (simple count)
+- "what columns exist?" → chat (simple list)
+- "show me row 5" → chat (simple lookup)
 
 User has data: {has_data}{columns_info}
 

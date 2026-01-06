@@ -122,6 +122,9 @@ class DataOperator:
             # Validation & quality
             "validate_schema": self._validate_schema,
             "quarantine_rows": self._quarantine_rows,
+            # Analysis operations
+            "detect_outliers": self._detect_outliers,
+            "get_statistics": self._get_statistics,
         }
         
         if operation not in op_map:
@@ -718,6 +721,119 @@ class DataOperator:
             return self._apply_single_condition(name, condition_col, operator, threshold, true_value, false_value)
         except Exception as e:
             return f"Error: Error creating conditional column: {str(e)}"
+
+    def _detect_outliers(self, params: Dict) -> str:
+        """Detect and filter to show only outlier rows.
+        
+        Supports multiple methods:
+        - IQR (default): Values outside Q1 - 1.5*IQR to Q3 + 1.5*IQR
+        - z-score: Values more than N standard deviations from mean
+        - custom: User-specified min/max bounds
+        """
+        column = params.get("column")
+        method = params.get("method", "iqr").lower()
+        threshold = params.get("threshold", 1.5)  # IQR multiplier or z-score threshold
+        
+        if not column:
+            return "Column name is required."
+        
+        col = self._match_column(column)
+        if not col:
+            return f"Column '{column}' not found. Available: {list(self.df.columns)}"
+        
+        if not pd.api.types.is_numeric_dtype(self.df[col]):
+            return f"Column '{col}' is not numeric. Outlier detection requires numeric data."
+        
+        col_data = self.df[col].dropna()
+        if len(col_data) == 0:
+            return f"Column '{col}' has no non-null values."
+        
+        # Calculate bounds based on method
+        if method == "iqr":
+            q1 = col_data.quantile(0.25)
+            q3 = col_data.quantile(0.75)
+            iqr = q3 - q1
+            lower_bound = q1 - threshold * iqr
+            upper_bound = q3 + threshold * iqr
+            method_desc = f"IQR method (threshold: {threshold}×IQR)"
+        elif method in ("zscore", "z-score", "z_score"):
+            mean = col_data.mean()
+            std = col_data.std()
+            lower_bound = mean - threshold * std
+            upper_bound = mean + threshold * std
+            method_desc = f"Z-score method (threshold: {threshold}σ)"
+        elif method == "custom":
+            lower_bound = params.get("min")
+            upper_bound = params.get("max")
+            if lower_bound is None and upper_bound is None:
+                return "Custom method requires 'min' and/or 'max' bounds."
+            lower_bound = lower_bound if lower_bound is not None else float('-inf')
+            upper_bound = upper_bound if upper_bound is not None else float('inf')
+            method_desc = f"Custom bounds ({lower_bound} to {upper_bound})"
+        else:
+            return f"Unknown method: {method}. Use 'iqr', 'zscore', or 'custom'."
+        
+        # Filter to outliers only
+        outlier_mask = (self.df[col] < lower_bound) | (self.df[col] > upper_bound)
+        outlier_count = outlier_mask.sum()
+        
+        if outlier_count == 0:
+            return f"No outliers found in '{col}' using {method_desc}. Bounds: [{lower_bound:.2f}, {upper_bound:.2f}]"
+        
+        # Keep only outlier rows
+        self.df = self.df[outlier_mask]
+        
+        return (
+            f"Found {outlier_count} outliers in '{col}' using {method_desc}. "
+            f"Bounds: [{lower_bound:.2f}, {upper_bound:.2f}]. "
+            f"Min outlier: {self.df[col].min():.2f}, Max outlier: {self.df[col].max():.2f}"
+        )
+
+    def _get_statistics(self, params: Dict) -> str:
+        """Get detailed statistics for a column or the entire dataset."""
+        column = params.get("column")
+        
+        if column:
+            col = self._match_column(column)
+            if not col:
+                return f"Column '{column}' not found."
+            
+            if pd.api.types.is_numeric_dtype(self.df[col]):
+                stats = self.df[col].describe()
+                q1 = self.df[col].quantile(0.25)
+                q3 = self.df[col].quantile(0.75)
+                iqr = q3 - q1
+                
+                result = f"**Statistics for '{col}':**\n"
+                result += f"- Count: {int(stats['count'])}\n"
+                result += f"- Mean: {stats['mean']:.2f}\n"
+                result += f"- Std: {stats['std']:.2f}\n"
+                result += f"- Min: {stats['min']:.2f}\n"
+                result += f"- Q1 (25%): {q1:.2f}\n"
+                result += f"- Median (50%): {stats['50%']:.2f}\n"
+                result += f"- Q3 (75%): {q3:.2f}\n"
+                result += f"- Max: {stats['max']:.2f}\n"
+                result += f"- IQR: {iqr:.2f}\n"
+                result += f"- Nulls: {self.df[col].isna().sum()}"
+                return result
+            else:
+                value_counts = self.df[col].value_counts().head(10)
+                result = f"**Statistics for '{col}' (categorical):**\n"
+                result += f"- Unique values: {self.df[col].nunique()}\n"
+                result += f"- Nulls: {self.df[col].isna().sum()}\n"
+                result += f"- Top values:\n"
+                for val, count in value_counts.items():
+                    result += f"  - {val}: {count}\n"
+                return result
+        else:
+            # Overall dataset statistics
+            result = f"**Dataset Statistics:**\n"
+            result += f"- Rows: {len(self.df)}\n"
+            result += f"- Columns: {len(self.df.columns)}\n"
+            result += f"- Memory: {self.df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB\n"
+            result += f"- Nulls: {self.df.isna().sum().sum()} total\n"
+            result += f"- Duplicates: {self.df.duplicated().sum()} rows\n"
+            return result
 
     def get_result(self) -> pd.DataFrame:
         """Return the transformed DataFrame."""
