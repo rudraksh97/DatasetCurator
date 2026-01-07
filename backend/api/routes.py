@@ -379,7 +379,7 @@ async def download_file(
         # Download latest version
         if not state.curated_path:
             raise HTTPException(status_code=404, detail="No processed file available")
-        file_key = state.curated_path
+        file_key = str(state.curated_path)
         filename = Path(file_key).name if "/" in file_key else file_key
 
     # Check if file exists
