@@ -602,7 +602,7 @@ export default function Home() {
                 type="button"
                 className="attach-button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isProcessing || !!datasetId}
+                disabled={isProcessing || preview.length > 0}
                 title="Upload CSV file"
               >
                 {Icons.paperclip}
