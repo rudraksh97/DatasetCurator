@@ -12,6 +12,8 @@ Dataset Curator enables non-technical users to clean and transform CSV datasets 
 - Immutable version history per transformation
 - Semantic search over dataset content (pgvector)
 - Function-calling chat for exploratory data queries
+- Advanced statistical analysis & outlier detection
+- Mobile-friendly responsive UI
 
 ---
 
@@ -49,7 +51,7 @@ Dataset Curator enables non-technical users to clean and transform CSV datasets 
 │ • OpenRouterClient  │  │ ├─ check_approval   │  │                         │
 │                     │  │ ├─ execute_step     │  │ Storage:                │
 │ Model:              │  │ ├─ validate         │  │ • PostgreSQL + pgvector │
-│ Llama 3.3 70B       │  │ └─ finalize         │  │ • File system (CSV)     │
+│ Llama 3.3 70B       │  │ └─ finalize         │  │ • File system (S3/local)│
 │ via OpenRouter      │  │                     │  │                         │
 └─────────────────────┘  └─────────────────────┘  └─────────────────────────┘
 ```
@@ -201,6 +203,8 @@ All transformations map to canonical primitives:
 | **Aggregation** | `group_aggregate` | `group_rows + aggregate` | Group by with aggregations |
 | **Quality** | `validate_schema` | `validate_schema` | Check types, nulls, uniqueness |
 | | `quarantine_rows` | `quarantine_rows` | Separate invalid rows |
+| **Analysis** | `detect_outliers` | `detect_outliers` | Find outliers using IQR/Z-score |
+| | `get_statistics` | `get_statistics` | Detailed column/dataset stats |
 
 ---
 
@@ -301,8 +305,18 @@ All settings are environment-variable driven via Pydantic Settings.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAW_STORAGE_PATH` | `storage/raw` | Upload directory |
-| `CURATED_STORAGE_PATH` | `storage/curated` | Output directory |
+| `STORAGE_BACKEND` | `local` | `local` or `s3` |
+| `RAW_STORAGE_PATH` | `storage/raw` | Local upload directory |
+| `CURATED_STORAGE_PATH` | `storage/curated` | Local output directory |
+
+### Storage (S3 - Required if BACKEND=s3)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `S3_BUCKET` | | AWS S3 bucket name |
+| `S3_REGION` | `us-east-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | | AWS secret key |
 
 ### Data Processing
 
@@ -354,6 +368,30 @@ curl http://localhost:8000/healthcheck
 - Frontend: `http://localhost:3000`
 - API: `http://localhost:8000`
 - API Docs: `http://localhost:8000/docs`
+
+### Native Deployment (Ubuntu/EC2)
+
+The system includes configurations for running as a native systemd service behind Nginx.
+
+**1. Backend Service:**
+```bash
+# Copy service file
+sudo cp backend/datasetcurator.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable datasetcurator
+sudo systemctl start datasetcurator
+```
+
+**2. Nginx Configuration:**
+```bash
+# Setup SSL certificates
+./nginx/generate_certs.sh
+
+# Copy nginx config
+sudo cp nginx/datasetcurator.conf /etc/nginx/sites-available/
+sudo ln -s /etc/nginx/sites-available/datasetcurator.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl restart nginx
+```
 
 ### Local Development
 
@@ -538,12 +576,13 @@ class MyQueryHandler(BaseQueryHandler):
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| Frontend | Next.js 14, React 18, TypeScript | App shell, data preview |
+| Frontend | Next.js 14, TypeScript | App shell, mobile-first design |
 | API | FastAPI, Pydantic | REST endpoints, validation |
 | Orchestration | LangGraph | Workflow state machine |
 | LLM | OpenRouter (Llama 3.3 70B) | Intent, planning, chat |
 | Data | Pandas | DataFrame operations |
 | Database | PostgreSQL + pgvector | State, embeddings |
+| Storage | Local / AWS S3 | Object storage |
 | Container | Docker Compose | Local/production deployment |
 
 ---
