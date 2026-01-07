@@ -51,7 +51,7 @@ class LLMSettings:
     """LLM provider configuration."""
     api_key: str = field(default_factory=lambda: _get_env("OPENROUTER_API_KEY"))
     base_url: str = field(default_factory=lambda: _get_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"))
-    default_model: str = field(default_factory=lambda: _get_env("DEFAULT_LLM_MODEL", "mistralai/mistral-7b-instruct:free"))
+    default_model: str = field(default_factory=lambda: _get_env("DEFAULT_LLM_MODEL", "meta-llama/llama-3.3-70b-instruct:free"))
     default_temperature: float = 0.7
     default_max_tokens: int = 2048
     max_tool_iterations: int = field(default_factory=lambda: _get_env_int("MAX_TOOL_ITERATIONS", 10))
