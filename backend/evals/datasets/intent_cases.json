@@ -1,0 +1,122 @@
+[
+    {
+        "message": "remove the email column",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name",
+            "email",
+            "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+    },
+    {
+        "message": "drop rows where age is null",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name",
+            "email",
+            "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+    },
+    {
+        "message": "clean the data by removing duplicates",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name",
+            "email",
+            "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+    },
+    {
+        "message": "group by department and count",
+        "has_data": true,
+        "columns": [
+            "id",
+            "department",
+            "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "aggregation"
+    },
+    {
+        "message": "average salary by department",
+        "has_data": true,
+        "columns": [
+            "id",
+            "department",
+            "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "aggregation"
+    },
+    {
+        "message": "show me the statistics for salary",
+        "has_data": true,
+        "columns": [
+            "id",
+            "department",
+            "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "analysis"
+    },
+    {
+        "message": "how many rows are there?",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name"
+        ],
+        "expected_intent": "chat",
+        "category": "metadata"
+    },
+    {
+        "message": "what columns do I have?",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name"
+        ],
+        "expected_intent": "chat",
+        "category": "metadata"
+    },
+    {
+        "message": "show me a random row",
+        "has_data": true,
+        "columns": [
+            "id",
+            "name"
+        ],
+        "expected_intent": "chat",
+        "category": "lookup"
+    },
+    {
+        "message": "hello",
+        "has_data": false,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+    },
+    {
+        "message": "thanks",
+        "has_data": true,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+    },
+    {
+        "message": "what is the capital of France?",
+        "has_data": false,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+    }
+]

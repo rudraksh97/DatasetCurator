@@ -1,0 +1,755 @@
+{
+  "summary": {
+    "total": 13,
+    "correct": 13,
+    "accuracy": 100.0
+  },
+  "detailed_results": [
+    {
+      "case": {
+        "message": "remove the email column",
+        "columns": [
+          "id",
+          "name",
+          "email",
+          "age"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "drop_column",
+            "params_subset": {
+              "column": "email"
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Remove the email column",
+            "operation": "drop_column",
+            "params": {
+              "column": "email"
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "filter for score > 80",
+        "columns": [
+          "id",
+          "score"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "filter_rows",
+            "params_subset": {
+              "column": "score",
+              "operator": ">",
+              "value": 80
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Filter rows where score is greater than 80",
+            "operation": "filter_rows",
+            "params": {
+              "column": "score",
+              "operator": ">",
+              "value": 80
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "sort by age descending",
+        "columns": [
+          "id",
+          "age"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "sort",
+            "params_subset": {
+              "column": "age",
+              "ascending": false
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Sort the dataset by age in descending order",
+            "operation": "sort",
+            "params": {
+              "column": "age",
+              "ascending": false
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "group by department and count",
+        "columns": [
+          "id",
+          "department"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "group_aggregate",
+            "params_subset": {
+              "group_by": "department"
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": true,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Group by department and count",
+            "operation": "group_aggregate",
+            "params": {
+              "group_by": "department",
+              "aggregations": {}
+            },
+            "analysis_only": true,
+            "mutate": false
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "clean the data: remove duplicates and fill null scores with 0",
+        "columns": [
+          "id",
+          "score"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "drop_duplicates"
+          },
+          {
+            "type": "contains_operation",
+            "operation": "fill_nulls",
+            "params_subset": {
+              "column": "score",
+              "value": 0
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Remove duplicate rows",
+            "operation": "drop_duplicates",
+            "params": {},
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 2,
+            "description": "Fill null scores with 0",
+            "operation": "fill_nulls",
+            "params": {
+              "column": "score",
+              "value": 0
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "rename column 'nm' to 'Name' and convert it to string",
+        "columns": [
+          "id",
+          "nm"
+        ],
+        "categories": [
+          "renaming",
+          "type_conversion"
+        ],
+        "assertions": [
+          {
+            "type": "ordered_operations",
+            "operations": [
+              {
+                "operation": "rename_column",
+                "params_subset": {
+                  "old_name": "nm",
+                  "new_name": "Name"
+                }
+              },
+              {
+                "operation": "convert_type",
+                "params_subset": {
+                  "column": "Name",
+                  "dtype": "str"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Rename column 'nm' to 'Name'",
+            "operation": "rename_column",
+            "params": {
+              "old_name": "nm",
+              "new_name": "Name"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 2,
+            "description": "Convert column 'Name' to string",
+            "operation": "convert_type",
+            "params": {
+              "column": "Name",
+              "dtype": "str"
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "find outliers in salary using IQR",
+        "columns": [
+          "id",
+          "salary"
+        ],
+        "categories": [
+          "analysis"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "detect_outliers",
+            "params_subset": {
+              "column": "salary",
+              "method": "iqr"
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": true,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Detect outliers in salary using IQR method",
+            "operation": "detect_outliers",
+            "params": {
+              "column": "salary",
+              "method": "iqr",
+              "threshold": 1.5
+            },
+            "analysis_only": true,
+            "mutate": false
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "get top 10 highest scoring students",
+        "columns": [
+          "student",
+          "score"
+        ],
+        "categories": [
+          "ordering"
+        ],
+        "assertions": [
+          {
+            "type": "ordered_operations",
+            "operations": [
+              {
+                "operation": "sort",
+                "params_subset": {
+                  "column": "score",
+                  "ascending": false
+                }
+              },
+              {
+                "operation": "limit_rows",
+                "params_subset": {
+                  "n": 10
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": true,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Sort the dataset by score in descending order",
+            "operation": "sort",
+            "params": {
+              "column": "score",
+              "ascending": false
+            },
+            "analysis_only": true,
+            "mutate": false
+          },
+          {
+            "step": 2,
+            "description": "Limit the sorted dataset to the top 10 rows",
+            "operation": "limit_rows",
+            "params": {
+              "n": 10
+            },
+            "analysis_only": true,
+            "mutate": false
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "sample 5 random rows",
+        "columns": [
+          "id",
+          "data"
+        ],
+        "categories": [
+          "sampling"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "sample_rows",
+            "params_subset": {
+              "n": 5
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": true,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Sample 5 random rows from the dataset",
+            "operation": "sample_rows",
+            "params": {
+              "n": 5
+            },
+            "analysis_only": true,
+            "mutate": false
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "flter where age is greter than 20",
+        "columns": [
+          "id",
+          "age"
+        ],
+        "categories": [
+          "edge_case",
+          "typo"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "filter_rows",
+            "params_subset": {
+              "column": "age",
+              "value": 20
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": false,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Filter rows where age is greater than 20",
+            "operation": "filter_rows",
+            "params": {
+              "column": "age",
+              "operator": ">",
+              "value": 20
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "normalize the email column",
+        "columns": [
+          "email",
+          "name"
+        ],
+        "categories": [
+          "vague_request"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "strip_whitespace",
+            "params_subset": {
+              "column": "email"
+            }
+          },
+          {
+            "type": "contains_operation",
+            "operation": "lowercase",
+            "params_subset": {
+              "column": "email"
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Convert email column to lowercase",
+            "operation": "lowercase",
+            "params": {
+              "column": "email"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 2,
+            "description": "Strip whitespace from email column",
+            "operation": "strip_whitespace",
+            "params": {
+              "column": "email"
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "create a column 'Status' with value 'Pass' if score >= 60 else 'Fail'",
+        "columns": [
+          "score"
+        ],
+        "categories": [
+          "logic"
+        ],
+        "assertions": [
+          {
+            "type": "contains_operation",
+            "operation": "add_conditional_column",
+            "params_subset": {
+              "condition_column": "score",
+              "operator": ">=",
+              "threshold": 60,
+              "true_value": "Pass",
+              "false_value": "Fail"
+            }
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Add a conditional column 'Status' based on the score",
+            "operation": "add_conditional_column",
+            "params": {
+              "name": "Status",
+              "condition_column": "score",
+              "operator": ">=",
+              "threshold": 60,
+              "true_value": "Pass",
+              "false_value": "Fail"
+            },
+            "analysis_only": false,
+            "mutate": true
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    },
+    {
+      "case": {
+        "message": "Prepare the data for analysis: Remove any rows with 'error' status or missing customer_id. Normalize the 'country' column to uppercase and strip whitespace. Fill missing order_amounts with the median value. Create a 'VIP' category for order_amounts over 5000 (True/False). Finally, return the top 20 VIP orders sorted by order_date descending.",
+        "columns": [
+          "status",
+          "customer_id",
+          "country",
+          "order_amount",
+          "order_date"
+        ],
+        "categories": [
+          "complex_workflow"
+        ],
+        "assertions": [
+          {
+            "type": "ordered_operations",
+            "operations": [
+              {
+                "operation": "filter_rows",
+                "params_subset": {
+                  "column": "status",
+                  "operator": "!=",
+                  "value": "error"
+                }
+              },
+              {
+                "operation": "drop_nulls",
+                "params_subset": {
+                  "column": "customer_id"
+                }
+              },
+              {
+                "operation": "uppercase",
+                "params_subset": {
+                  "column": "country"
+                }
+              },
+              {
+                "operation": "strip_whitespace",
+                "params_subset": {
+                  "column": "country"
+                }
+              },
+              {
+                "operation": "fill_nulls",
+                "params_subset": {
+                  "column": "order_amount",
+                  "method": "median"
+                }
+              },
+              {
+                "operation": "add_conditional_column",
+                "params_subset": {
+                  "name": "VIP",
+                  "true_value": true
+                }
+              },
+              {
+                "operation": "filter_rows",
+                "params_subset": {
+                  "column": "VIP",
+                  "value": true
+                }
+              },
+              {
+                "operation": "sort",
+                "params_subset": {
+                  "column": "order_date",
+                  "ascending": false
+                }
+              },
+              {
+                "operation": "limit_rows",
+                "params_subset": {
+                  "n": 20
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "plan": {
+        "is_analysis": false,
+        "is_multi_step": true,
+        "steps": [
+          {
+            "step": 1,
+            "description": "Remove rows with 'error' status or missing customer_id",
+            "operation": "filter_rows",
+            "params": {
+              "column": "status",
+              "operator": "!=",
+              "value": "error"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 2,
+            "description": "Remove rows with missing customer_id",
+            "operation": "drop_nulls",
+            "params": {
+              "column": "customer_id"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 3,
+            "description": "Normalize 'country' column to uppercase and strip whitespace",
+            "operation": "uppercase",
+            "params": {
+              "column": "country"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 4,
+            "description": "Strip whitespace from 'country' column",
+            "operation": "strip_whitespace",
+            "params": {
+              "column": "country"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 5,
+            "description": "Fill missing order_amounts with median value",
+            "operation": "fill_nulls",
+            "params": {
+              "column": "order_amount",
+              "method": "median"
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 6,
+            "description": "Create 'VIP' category for order_amounts over 5000",
+            "operation": "add_conditional_column",
+            "params": {
+              "name": "VIP",
+              "condition_column": "order_amount",
+              "operator": ">",
+              "threshold": 5000,
+              "true_value": true,
+              "false_value": false
+            },
+            "analysis_only": false,
+            "mutate": true
+          },
+          {
+            "step": 7,
+            "description": "Filter VIP orders",
+            "operation": "filter_rows",
+            "params": {
+              "column": "VIP",
+              "operator": "==",
+              "value": true
+            },
+            "analysis_only": true,
+            "mutate": false
+          },
+          {
+            "step": 8,
+            "description": "Sort VIP orders by order_date descending",
+            "operation": "sort",
+            "params": {
+              "column": "order_date",
+              "ascending": false
+            },
+            "analysis_only": true,
+            "mutate": false
+          },
+          {
+            "step": 9,
+            "description": "Return top 20 VIP orders",
+            "operation": "limit_rows",
+            "params": {
+              "n": 20
+            },
+            "analysis_only": true,
+            "mutate": false
+          }
+        ]
+      },
+      "correct": true,
+      "failed_assertions": []
+    }
+  ]
+}

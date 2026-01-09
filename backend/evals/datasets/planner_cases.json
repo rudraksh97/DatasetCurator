@@ -1,0 +1,342 @@
+[
+    {
+        "message": "remove the email column",
+        "columns": [
+            "id",
+            "name",
+            "email",
+            "age"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "drop_column",
+                "params_subset": {
+                    "column": "email"
+                }
+            }
+        ]
+    },
+    {
+        "message": "filter for score > 80",
+        "columns": [
+            "id",
+            "score"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "filter_rows",
+                "params_subset": {
+                    "column": "score",
+                    "operator": ">",
+                    "value": 80
+                }
+            }
+        ]
+    },
+    {
+        "message": "sort by age descending",
+        "columns": [
+            "id",
+            "age"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "sort",
+                "params_subset": {
+                    "column": "age",
+                    "ascending": false
+                }
+            }
+        ]
+    },
+    {
+        "message": "group by department and count",
+        "columns": [
+            "id",
+            "department"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "group_aggregate",
+                "params_subset": {
+                    "group_by": "department"
+                }
+            }
+        ]
+    },
+    {
+        "message": "clean the data: remove duplicates and fill null scores with 0",
+        "columns": [
+            "id",
+            "score"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "drop_duplicates"
+            },
+            {
+                "type": "contains_operation",
+                "operation": "fill_nulls",
+                "params_subset": {
+                    "column": "score",
+                    "value": 0
+                }
+            }
+        ]
+    },
+    {
+        "message": "rename column 'nm' to 'Name' and convert it to string",
+        "columns": [
+            "id",
+            "nm"
+        ],
+        "categories": [
+            "renaming",
+            "type_conversion"
+        ],
+        "assertions": [
+            {
+                "type": "ordered_operations",
+                "operations": [
+                    {
+                        "operation": "rename_column",
+                        "params_subset": {
+                            "old_name": "nm",
+                            "new_name": "Name"
+                        }
+                    },
+                    {
+                        "operation": "convert_type",
+                        "params_subset": {
+                            "column": "Name",
+                            "dtype": "str"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": "find outliers in salary using IQR",
+        "columns": [
+            "id",
+            "salary"
+        ],
+        "categories": [
+            "analysis"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "detect_outliers",
+                "params_subset": {
+                    "column": "salary",
+                    "method": "iqr"
+                }
+            }
+        ]
+    },
+    {
+        "message": "get top 10 highest scoring students",
+        "columns": [
+            "student",
+            "score"
+        ],
+        "categories": [
+            "ordering"
+        ],
+        "assertions": [
+            {
+                "type": "ordered_operations",
+                "operations": [
+                    {
+                        "operation": "sort",
+                        "params_subset": {
+                            "column": "score",
+                            "ascending": false
+                        }
+                    },
+                    {
+                        "operation": "limit_rows",
+                        "params_subset": {
+                            "n": 10
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "message": "sample 5 random rows",
+        "columns": [
+            "id",
+            "data"
+        ],
+        "categories": [
+            "sampling"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "sample_rows",
+                "params_subset": {
+                    "n": 5
+                }
+            }
+        ]
+    },
+    {
+        "message": "flter where age is greter than 20",
+        "columns": [
+            "id",
+            "age"
+        ],
+        "categories": [
+            "edge_case",
+            "typo"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "filter_rows",
+                "params_subset": {
+                    "column": "age",
+                    "value": 20
+                }
+            }
+        ]
+    },
+    {
+        "message": "normalize the email column",
+        "columns": [
+            "email",
+            "name"
+        ],
+        "categories": [
+            "vague_request"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "strip_whitespace",
+                "params_subset": {
+                    "column": "email"
+                }
+            },
+            {
+                "type": "contains_operation",
+                "operation": "lowercase",
+                "params_subset": {
+                    "column": "email"
+                }
+            }
+        ]
+    },
+    {
+        "message": "create a column 'Status' with value 'Pass' if score >= 60 else 'Fail'",
+        "columns": [
+            "score"
+        ],
+        "categories": [
+            "logic"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "add_conditional_column",
+                "params_subset": {
+                    "condition_column": "score",
+                    "operator": ">=",
+                    "threshold": 60,
+                    "true_value": "Pass",
+                    "false_value": "Fail"
+                }
+            }
+        ]
+    },
+    {
+        "message": "Prepare the data for analysis: Remove any rows with 'error' status or missing customer_id. Normalize the 'country' column to uppercase and strip whitespace. Fill missing order_amounts with the median value. Create a 'VIP' category for order_amounts over 5000 (True/False). Finally, return the top 20 VIP orders sorted by order_date descending.",
+        "columns": [
+            "status",
+            "customer_id",
+            "country",
+            "order_amount",
+            "order_date"
+        ],
+        "categories": [
+            "complex_workflow"
+        ],
+        "assertions": [
+            {
+                "type": "ordered_operations",
+                "operations": [
+                    {
+                        "operation": "filter_rows",
+                        "params_subset": {
+                            "column": "status",
+                            "operator": "!=",
+                            "value": "error"
+                        }
+                    },
+                    {
+                        "operation": "drop_nulls",
+                        "params_subset": {
+                            "column": "customer_id"
+                        }
+                    },
+                    {
+                        "operation": "uppercase",
+                        "params_subset": {
+                            "column": "country"
+                        }
+                    },
+                    {
+                        "operation": "strip_whitespace",
+                        "params_subset": {
+                            "column": "country"
+                        }
+                    },
+                    {
+                        "operation": "fill_nulls",
+                        "params_subset": {
+                            "column": "order_amount",
+                            "method": "median"
+                        }
+                    },
+                    {
+                        "operation": "add_conditional_column",
+                        "params_subset": {
+                            "name": "VIP",
+                            "true_value": true
+                        }
+                    },
+                    {
+                        "operation": "filter_rows",
+                        "params_subset": {
+                            "column": "VIP",
+                            "value": true
+                        }
+                    },
+                    {
+                        "operation": "sort",
+                        "params_subset": {
+                            "column": "order_date",
+                            "ascending": false
+                        }
+                    },
+                    {
+                        "operation": "limit_rows",
+                        "params_subset": {
+                            "n": 20
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+]

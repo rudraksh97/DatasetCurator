@@ -1,0 +1,215 @@
+{
+  "summary": {
+    "total": 12,
+    "correct": 12,
+    "accuracy": 100.0,
+    "by_category": {
+      "modification": {
+        "total": 3,
+        "correct": 3
+      },
+      "aggregation": {
+        "total": 2,
+        "correct": 2
+      },
+      "analysis": {
+        "total": 1,
+        "correct": 1
+      },
+      "metadata": {
+        "total": 2,
+        "correct": 2
+      },
+      "lookup": {
+        "total": 1,
+        "correct": 1
+      },
+      "general": {
+        "total": 3,
+        "correct": 3
+      }
+    }
+  },
+  "detailed_results": [
+    {
+      "case": {
+        "message": "remove the email column",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name",
+          "email",
+          "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "Removing the email column from the data"
+    },
+    {
+      "case": {
+        "message": "drop rows where age is null",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name",
+          "email",
+          "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "Drop rows with null age values"
+    },
+    {
+      "case": {
+        "message": "clean the data by removing duplicates",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name",
+          "email",
+          "age"
+        ],
+        "expected_intent": "transform_data",
+        "category": "modification"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "Removing duplicate rows from the data"
+    },
+    {
+      "case": {
+        "message": "group by department and count",
+        "has_data": true,
+        "columns": [
+          "id",
+          "department",
+          "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "aggregation"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "Aggregation operation to group data by department and count the number of rows in each group"
+    },
+    {
+      "case": {
+        "message": "average salary by department",
+        "has_data": true,
+        "columns": [
+          "id",
+          "department",
+          "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "aggregation"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "To calculate the average salary by department, we need to perform a group aggregation operation."
+    },
+    {
+      "case": {
+        "message": "show me the statistics for salary",
+        "has_data": true,
+        "columns": [
+          "id",
+          "department",
+          "salary"
+        ],
+        "expected_intent": "transform_data",
+        "category": "analysis"
+      },
+      "actual": "transform_data",
+      "correct": true,
+      "explanation": "User requested statistics for the salary column, which requires data analysis"
+    },
+    {
+      "case": {
+        "message": "how many rows are there?",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name"
+        ],
+        "expected_intent": "chat",
+        "category": "metadata"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "Simple row count query"
+    },
+    {
+      "case": {
+        "message": "what columns do I have?",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name"
+        ],
+        "expected_intent": "chat",
+        "category": "metadata"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "User is asking for a list of available columns"
+    },
+    {
+      "case": {
+        "message": "show me a random row",
+        "has_data": true,
+        "columns": [
+          "id",
+          "name"
+        ],
+        "expected_intent": "chat",
+        "category": "lookup"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "User is requesting a simple lookup of a random row from the data"
+    },
+    {
+      "case": {
+        "message": "hello",
+        "has_data": false,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "User greeted the system"
+    },
+    {
+      "case": {
+        "message": "thanks",
+        "has_data": true,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "User expressed gratitude, no data processing required"
+    },
+    {
+      "case": {
+        "message": "what is the capital of France?",
+        "has_data": false,
+        "columns": [],
+        "expected_intent": "chat",
+        "category": "general"
+      },
+      "actual": "chat",
+      "correct": true,
+      "explanation": "Simple question that doesn't require data processing"
+    }
+  ]
+}

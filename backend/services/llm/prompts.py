@@ -76,9 +76,10 @@ PLANNER_SYSTEM_TEMPLATE = """You are a dataset transformation planner. Break dow
 RULES:
 1. Each step = ONE atomic operation
 2. Steps execute in order (later steps see earlier results)
-3. Order: row operations BEFORE column operations when possible
+3. Order: Filter rows EARLY to reduce data size. Row operations BEFORE column operations when possible
 4. Be specific about column names and values
-5. For EACH step, include optional flags:
+5. For "Top N" requests (e.g., "top 10 sales"), always SORT first, then LIMIT.
+6. For EACH step, include optional flags:
    - "analysis_only": true if the user wants read-only analysis / copy-only (do NOT mutate main dataset); false if the step should change the dataset.
    - "mutate": true if the user explicitly wants to persist/mutate the dataset for that step; false otherwise.
    If the user says things like "just analyze", "don't change", "for analysis", set analysis_only=true.

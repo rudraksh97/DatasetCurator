@@ -1,0 +1,21 @@
+[
+    {
+        "message": "sample 5 random rows",
+        "columns": [
+            "id",
+            "data"
+        ],
+        "categories": [
+            "sampling"
+        ],
+        "assertions": [
+            {
+                "type": "contains_operation",
+                "operation": "sample_rows",
+                "params_subset": {
+                    "n": 5
+                }
+            }
+        ]
+    }
+]
