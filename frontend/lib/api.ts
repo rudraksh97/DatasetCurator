@@ -4,10 +4,10 @@
  * All functions communicate with the FastAPI backend for dataset
  * operations including upload, preview, download, and chat.
  */
- 
+
 import type { UploadResponse, PreviewResponse, ChatResponse, LlmModelsResponse } from "@/types/api";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 /**
  * Handle API response and throw on error.
@@ -86,8 +86,8 @@ export async function sendChatMessage(
  * @returns Preview response with data and pagination, or null if not found.
  */
 export async function getPreview(
-  datasetId: string, 
-  page: number = 1, 
+  datasetId: string,
+  page: number = 1,
   pageSize: number = 50
 ): Promise<PreviewResponse | null> {
   const res = await fetch(`${BASE_URL}/preview/${datasetId}?page=${page}&page_size=${pageSize}`);

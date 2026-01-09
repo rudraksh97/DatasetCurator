@@ -188,10 +188,22 @@ async def process_upload(
             await storage.write_csv(curated_key, df_full)
             state.curated_path = curated_key
         else:
-            curated_path = settings.storage.curated_path / f"{dataset_id}_v1.csv"
+            curated_filename = f"{dataset_id}_v1.csv"
+            # Full path for pandas
+            curated_full_path = settings.storage.curated_path / curated_filename
             df_full = pd.read_csv(source_path)
-            df_full.to_csv(curated_path, index=False)
-            state.curated_path = str(curated_path)
+            df_full.to_csv(curated_full_path, index=False)
+            
+            # Relative path for Storage service / DB
+            state.curated_path = f"curated/{curated_filename}"
+            
+            # Ensure raw_path is also relative if it isn't already
+            # source_path from routes.py is target_path (storage/raw/...)
+            # We want just raw/...
+            source_str = str(source_path)
+            if "storage/" in source_str:
+                # Naive strip, but robust enough for this specific doubled path issue
+                state.raw_path = source_str.split("storage/")[-1]
         state.current_version = 1
     except Exception as e:
         print(f"[Upload] Error: Could not create curated copy for {dataset_id}: {e}")
@@ -250,23 +262,28 @@ async def load_data_node(state: TransformationState) -> TransformationState:
         
         return {**state, "df": df, "error_message": ""}
     except Exception as e:
+        print(f"[Workflow] load_data_node error: {e}")
         return {**state, "df": None, "error_message": f"Failed to load data: {str(e)}"}
 
 
 def check_approval_node(state: TransformationState) -> TransformationState:
-    """Check if current step needs human approval (destructive operations)."""
+    """Check if the current step needs approval."""
+    print(f"[Workflow] check_approval_node: idx={state.get('current_step_idx')}, needs_approval={state.get('needs_approval')}, granted={state.get('approval_granted')}")
     if state["current_step_idx"] >= len(state["steps"]):
         return state
     
     # If already approved, we can proceed
     if state.get("approval_granted"):
+        print("[Workflow] check_approval_node: Approval already granted, proceeding.")
         return {**state, "needs_approval": False}
 
     # Analysis operations are safe (read-only views)
     if state.get("is_analysis"):
+        print("[Workflow] check_approval_node: Analysis mode, no approval needed.")
         return {**state, "needs_approval": False}
     
     # Any permanent change (non-analysis) requires approval
+    print("[Workflow] check_approval_node: Destructive operation, approval needed.")
     return {**state, "needs_approval": True}
 
 
@@ -306,11 +323,13 @@ def _execute_operation(
 
 def execute_step_node(state: TransformationState) -> TransformationState:
     """Execute the current step."""
-    idx = state["current_step_idx"]
-    if idx >= len(state["steps"]):
+    if not state["steps"] or state["current_step_idx"] >= len(state["steps"]):
+        print(f"[Workflow] execute_step_node: No steps or index out of bounds. idx={state.get('current_step_idx')}, total_steps={len(state.get('steps', []))}")
         return state
     
+    idx = state["current_step_idx"]
     step = state["steps"][idx]
+    print(f"[Workflow] execute_step_node: idx={idx}, step={step.get('operation')}, description='{step.get('description')}'")
     step_num = step.get("step", idx + 1)
     description = step.get("description", "Unknown step")
     operation = step.get("operation")
@@ -377,7 +396,26 @@ def execute_step_node(state: TransformationState) -> TransformationState:
             step_num, description, operation, StepStatus.FAILED, msg,
             rows_before=rows_before, retry_count=retry_count
         )
-        return {**state, "results": updated_results + [result], "error_message": msg}
+        
+        # Check if we should advance (give up) or stay (retry)
+        # Note: logic moved here from conditional edge to ensure state update
+        max_retries = state.get("max_retries", 1)
+        
+        if retry_count >= max_retries:
+            # Give up, move to next step
+            return {
+                **state, 
+                "results": updated_results + [result], 
+                "error_message": msg,
+                "current_step_idx": idx + 1
+            }
+        else:
+            # Stay on current step for retry
+            return {
+                **state, 
+                "results": updated_results + [result], 
+                "error_message": msg
+            }
         
     except Exception as e:
         result = _create_step_result(
@@ -508,9 +546,9 @@ def should_retry_or_continue(state: TransformationState) -> Literal["retry", "co
         return "continue"
     
     elif last_result.status == StepStatus.FAILED:
-        if last_result.retry_count < state["max_retries"]:
+        if last_result.retry_count < state.get("max_retries", 1):
             return "retry"
-        state["current_step_idx"] = state.get("current_step_idx", 0) + 1
+        # If we failed but max retries reached, we already incremented index in execute_step
         if state["current_step_idx"] >= len(state["steps"]):
             return "finalize"
         return "continue"

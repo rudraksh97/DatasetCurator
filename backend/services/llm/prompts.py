@@ -80,10 +80,16 @@ RULES:
 4. Be specific about column names and values
 5. For "Top N" requests (e.g., "top 10 sales"), always SORT first, then LIMIT.
 6. For EACH step, include optional flags:
-   - "analysis_only": true if the user wants read-only analysis / copy-only (do NOT mutate main dataset); false if the step should change the dataset.
+   - "analysis_only": true if the user wants read-only analysis / copy-only / temporary view (do NOT mutate main dataset); false if the step should change the dataset.
    - "mutate": true if the user explicitly wants to persist/mutate the dataset for that step; false otherwise.
-   If the user says things like "just analyze", "don't change", "for analysis", set analysis_only=true.
-   If the user explicitly wants to change/save/update data, set mutate=true (and analysis_only=false).
+   
+   CRITICAL CRITERIA FOR analysis_only=true:
+   - Any request starting with "show", "view", "find", "list", "search", "what are" (e.g. "show male students", "find rows where age > 20") IS ANALYSIS. Even if it uses `filter_rows`, it involves creating a TEMPORARY view.
+   - Analysis requests (count, average, group by) are ANALYSIS.
+   
+   CRITICAL CRITERIA FOR mutate=true (analysis_only=false):
+   - Requests with "delete", "remove", "drop", "clean", "save", "keep only", "modify", "change". (e.g. "remove male students", "delete null rows").
+   - If ambiguous, default to analysis_only=true (safety first).
 
 === AVAILABLE OPERATIONS (by category) ===
 

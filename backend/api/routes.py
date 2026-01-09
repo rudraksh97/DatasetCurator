@@ -199,13 +199,19 @@ async def upload_dataset(
     state = await process_upload(session, dataset_id, target_path)
     
     # Use storage abstraction for reading
-    df = await storage.read_csv(str(target_path))
+    # NOTE: LocalStorage expects relative path (raw_path), not full path (target_path)
+    # target_path is constructed as storage/raw/... for Process/LangGraph, 
+    # but storage.read_csv/preview does base_path + path.
+    # To be safe and consistent with write_file, we use raw_path here.
+    df = await storage.read_csv(raw_path)
     row_count = int(len(df))
     column_count = int(len(df.columns))
 
-    preview_data = await _preview_df(str(target_path), page=1, page_size=50)
+    preview_data = await _preview_df(raw_path, page=1, page_size=50)
     
-    background_tasks.add_task(_embed_dataset_background, dataset_id, str(target_path))
+    # Background task also uses storage abstraction eventually? 
+    # Let's check _embed_dataset_background. It probably uses storage service too.
+    background_tasks.add_task(_embed_dataset_background, dataset_id, raw_path)
     
     return {
         "dataset_id": dataset_id,
@@ -491,10 +497,9 @@ class ChatHandler:
                 preview_md = _df_to_markdown(final_df, 20)
                 preview_md += f"\n\n*Showing 20 of {total_rows} rows*"
             else:
-                preview_md = _df_to_markdown(final_df, 10)
-                preview_md += f"\n\n*Showing 10 of {total_rows} rows. Check the Data Preview panel for full paginated view.*"
-            
-            final_message += f"\n\n**Preview:**\n\n{preview_md}"
+            # Generate preview textual summary if needed, but DO NOT append markdown table
+            # The UI now handles preview in a separate panel.
+            # final_message += f"\n\n**Preview:**\n\n{preview_md}"
             
             # Create structured preview data for the UI
             preview_data = final_df.head(50).replace({float('nan'): None}).to_dict(orient="records")
