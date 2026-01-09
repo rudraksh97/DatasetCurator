@@ -95,7 +95,8 @@ def _detect_text_columns(df: pd.DataFrame) -> List[str]:
     for col in df.columns:
         if df[col].dtype == "object":
             sample = df[col].dropna().head(5).tolist()
-            if sample and any(len(str(s)) > 10 for s in sample):
+            # Lowered threshold from 10 to 2 to include short codes like "B.Sc", "PhD", "USA"
+            if sample and any(len(str(s)) > 2 for s in sample):
                 text_columns.append(col)
     
     # Prioritize common text column names
@@ -103,7 +104,7 @@ def _detect_text_columns(df: pd.DataFrame) -> List[str]:
     text_columns = sorted(
         text_columns,
         key=lambda x: next((i for i, p in enumerate(priority_cols) if p in x.lower()), 999)
-    )[:5]
+    )[:10]  # Increased limit from 5 to 10 to capture more context
     
     return text_columns
 

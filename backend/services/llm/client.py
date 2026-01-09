@@ -69,15 +69,40 @@ def _parse_json_response(response: str) -> Optional[Dict[str, Any]]:
         Parsed JSON dictionary or None if parsing fails.
     """
     response = response.strip()
+    
+    # Strip markdown code blocks if present
     if response.startswith("```"):
         parts = response.split("```")
         if len(parts) >= 2:
             response = parts[1]
             if response.startswith("json"):
                 response = response[4:]
+    
+    response = response.strip()
+    
+    # Robust extraction: find matching brace
+    start_idx = response.find("{")
+    if start_idx != -1:
+        brace_count = 0
+        end_idx = -1
+        
+        for i, char in enumerate(response[start_idx:], start=start_idx):
+            if char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+                
+            if brace_count == 0:
+                end_idx = i
+                break
+        
+        if end_idx != -1:
+            response = response[start_idx : end_idx + 1]
+        
     try:
-        return json.loads(response.strip())
+        return json.loads(response)
     except json.JSONDecodeError:
+        print(f"[LLM] JSON parse error on: {response}")
         return None
 
 

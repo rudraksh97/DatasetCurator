@@ -236,7 +236,11 @@ WORKFLOW:
 2. Call the appropriate function(s) to retrieve it
 3. Present the results clearly
 
-Be accurate and cite actual data values from your function calls."""
+CRITICAL RULES:
+- DO NOT output XML, JSON, or pseudo-code like <function>...</function>.
+- USE THE PROVIDED TOOLS/FUNCTIONS DIRECTLY via the function calling interface.
+- If you cannot use a tool, explain why in plain text.
+- Be accurate and cite actual data values from your function calls."""
 
 
 QUERY_TYPE_CLASSIFIER_TEMPLATE = """You are a query classifier. Determine if the user's message is:
