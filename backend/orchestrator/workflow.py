@@ -103,6 +103,7 @@ class TransformationState(TypedDict):
     # Output
     final_message: str
     success: bool
+    chart_config: Optional[Dict[str, Any]]  # Generated chart configuration
 
 
 # ============================================================================
@@ -314,11 +315,11 @@ def _execute_operation(
     df: pd.DataFrame, 
     operation: str, 
     params: Dict[str, Any],
-) -> tuple[bool, str, Optional[pd.DataFrame]]:
-    """Execute a data operation and return (success, message, result_df)."""
+) -> tuple[bool, str, Optional[pd.DataFrame], Optional[Dict[str, Any]]]:
+    """Execute a data operation and return (success, message, result_df, chart_config)."""
     operator = DataOperator(df)
     success, msg = operator.execute(operation, params)
-    return success, msg, operator.get_result() if success else None
+    return success, msg, operator.get_result() if success else None, operator.chart_config
 
 
 def execute_step_node(state: TransformationState) -> TransformationState:
@@ -355,7 +356,7 @@ def execute_step_node(state: TransformationState) -> TransformationState:
     rows_before = len(working_df)
     
     try:
-        success, msg, new_df = _execute_operation(working_df, operation, params)
+        success, msg, new_df, chart_config = _execute_operation(working_df, operation, params)
         
         if success and new_df is not None:
             result = _create_step_result(
@@ -373,6 +374,7 @@ def execute_step_node(state: TransformationState) -> TransformationState:
                     "results": results + [result],
                     "current_step_idx": idx + 1,
                     "error_message": "",
+                    "chart_config": chart_config if chart_config else state.get("chart_config"),
                 }
             else:
                 return {
@@ -381,7 +383,9 @@ def execute_step_node(state: TransformationState) -> TransformationState:
                     "results": results + [result],
                     "current_step_idx": idx + 1,
                     "error_message": "",
+                    "chart_config": chart_config if chart_config else state.get("chart_config"),
                 }
+
         
         # Operation failed - track retry count
         retry_count = 0
@@ -627,9 +631,10 @@ async def execute_transformation(
         data_path: Path to data file.
         columns: Available column names.
         max_retries: Maximum retry attempts per step.
+        approval_granted: Whether user approved transformation.
     
     Returns:
-        Tuple of (success, final_message, result_dataframe).
+        Tuple of (success, final_message, result_dataframe, is_analysis, chart_config).
     """
     graph = create_transformation_graph()
     
@@ -649,6 +654,7 @@ async def execute_transformation(
         "max_retries": max_retries,
         "final_message": "",
         "success": False,
+        "chart_config": None,
     }
     
     final_state = await graph.ainvoke(initial_state)
@@ -657,11 +663,13 @@ async def execute_transformation(
     is_analysis = final_state.get("is_analysis", False)
     steps = final_state.get("steps", [])
     result_df = final_state.get("analysis_df") if is_analysis else final_state["df"]
+    chart_config = final_state.get("chart_config")
     
     # For analysis mode, include both for the handler to decide
     return (
         final_state["success"],
         final_state["final_message"],
         result_df if result_df is not None else final_state["df"],
-        is_analysis
+        is_analysis,
+        chart_config,
     )

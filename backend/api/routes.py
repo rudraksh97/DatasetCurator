@@ -469,7 +469,7 @@ class ChatHandler:
             return "**No data to transform.** Load a dataset first!", None, None
         
         data_path = state.curated_path or state.raw_path
-        success, final_message, final_df, is_analysis = await execute_transformation(
+        success, final_message, final_df, is_analysis, chart_config = await execute_transformation(
             user_message=user_msg,
             data_path=data_path,
             columns=columns,
@@ -495,7 +495,8 @@ class ChatHandler:
             metadata = {
                 "row_count": total_rows,
                 "column_count": len(final_df.columns),
-                "is_analysis": is_analysis
+                "is_analysis": is_analysis,
+                "chart_config": chart_config
             }
             
             return final_message, preview_data, metadata

@@ -45,6 +45,7 @@ class DataOperator:
         self.original_shape = df.shape
         self.operations_log: List[str] = []
         self.quarantined: Optional[pd.DataFrame] = None  # Holds rows that failed validation
+        self.chart_config: Optional[Dict] = None  # Holds chart configuration if generated
 
     # ---- Internal helpers -------------------------------------------------
 
@@ -125,6 +126,7 @@ class DataOperator:
             # Analysis operations
             "detect_outliers": self._detect_outliers,
             "get_statistics": self._get_statistics,
+            "create_chart": self._create_chart,
         }
         
         if operation not in op_map:
@@ -858,3 +860,52 @@ class DataOperator:
                 summary += f"- {op}\n"
         
         return summary
+
+    def _create_chart(self, params: Dict) -> str:
+        """Create a chart visualization configuration."""
+        chart_type = params.get("type", "bar").lower()
+        
+        # Map unknown types to closest supported type
+        type_mapping = {
+            "histogram": "bar",
+            "box": "bar",
+            "column": "bar",
+            "plot": "line",
+            "area": "line"
+        }
+        chart_type = type_mapping.get(chart_type, chart_type)
+        
+        x_col = params.get("x_column")
+        y_col = params.get("y_column")
+        title = params.get("title", f"{chart_type} chart")
+        
+        if not x_col:
+            # Default to using index as x-axis
+            x_col = "_RowID"
+            # Add temporary column for plotting
+            self.df[x_col] = range(1, len(self.df) + 1)
+        else:
+            x_col = self._match_column(x_col)
+            if not x_col:
+                return f"Column '{params.get('x_column')}' not found."
+            
+        if y_col:
+            y_col = self._match_column(y_col)
+            if not y_col:
+                return f"Column '{params.get('y_column')}' not found."
+        
+        # Limit data for chart to avoid overwhelming the frontend
+        # For categorical charts, we assume data is already aggregated if row count is small
+        # otherwise we take top 50
+        chart_data = self.df.head(50).replace({float('nan'): None})
+        
+        # Structure compatible with Chart.js / frontend
+        self.chart_config = {
+            "type": chart_type,
+            "title": title,
+            "data": chart_data.to_dict(orient="records"),
+            "xField": x_col,
+            "yField": y_col
+        }
+        
+        return f"Created {chart_type} chart configuration: '{title}'."

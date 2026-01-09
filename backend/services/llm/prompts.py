@@ -65,6 +65,7 @@ VALIDATION_OPS = [
 ANALYSIS_OPS = [
     "detect_outliers",  # Find outlier rows using IQR, z-score, or custom bounds
     "get_statistics",   # Get detailed column or dataset statistics
+    "create_chart",     # Generate a visualization (bar, line, scatter, pie)
 ]
 
 # All operations (flat list for backward compatibility)
@@ -86,6 +87,7 @@ RULES:
    CRITICAL CRITERIA FOR analysis_only=true:
    - Any request starting with "show", "view", "find", "list", "search", "what are" (e.g. "show male students", "find rows where age > 20") IS ANALYSIS. Even if it uses `filter_rows`, it involves creating a TEMPORARY view.
    - Analysis requests (count, average, group by) are ANALYSIS.
+   - Visualization requests ("plot", "chart", "graph") satisfy analysis_only=true.
    
    CRITICAL CRITERIA FOR mutate=true (analysis_only=false):
    - Requests with "delete", "remove", "drop", "clean", "save", "keep only", "modify", "change". (e.g. "remove male students", "delete null rows").
@@ -152,6 +154,11 @@ ANALYSIS OPERATIONS:
 - detect_outliers (custom bounds): {{"column": "score", "method": "custom", "min": 0, "max": 100}} - custom range
 - get_statistics: {{"column": "score"}} - get detailed stats (mean, std, quartiles, IQR, etc.)
 - get_statistics (dataset): {{}} - get overall dataset stats
+- create_chart: {{"type": "bar|line|scatter|pie", "x_column": "col", "y_column": "col_optional", "title": "Chart Title"}}
+  Note: For categorical data comparisons (e.g. average score by gender), use group_aggregate FIRST, then create_chart on the result!
+  Example: 
+  1. group_aggregate {{"group_by": "gender", "aggregations": {{"score": "mean"}}}}
+  2. create_chart {{"type": "bar", "x_column": "gender", "y_column": "score", "title": "Avg Score by Gender"}}
 
 USE detect_outliers for: "find outliers", "show outliers", "what are the outliers", "extreme values"
 The result will show ONLY the outlier rows (filtered view).
@@ -160,7 +167,7 @@ Available columns: {columns}
 
 CRITICAL: Categorize the ENTIRE request as either:
 - "analysis": User wants to EXPLORE/ANALYZE/VIEW data (read-only, don't mutate the dataset)
-  Examples: "show me", "what is", "group by", "count", "average", "summarize", "analyze"
+  Examples: "show me", "what is", "group by", "count", "average", "summarize", "analyze", "plot", "chart"
 - "transformation": User wants to CHANGE/MODIFY/CLEAN the dataset (mutate and persist)
   Examples: "remove", "delete", "drop", "keep only", "fill", "convert", "rename", "sort and save"
 

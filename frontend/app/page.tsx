@@ -14,6 +14,7 @@ import { Sidebar } from "@/components/sidebar";
 import { Icons } from "@/components/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChartVisualizer } from "@/components/ChartVisualizer";
 
 interface ChatMessage {
   id: string;
@@ -35,7 +36,7 @@ export default function Home() {
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<UploadResponse["preview"]>([]);
   const [resultPreview, setResultPreview] = useState<UploadResponse["preview"] | null>(null);
-  const [resultMetadata, setResultMetadata] = useState<{ row_count: number; column_count: number; is_analysis: boolean } | null>(null);
+  const [resultMetadata, setResultMetadata] = useState<{ row_count: number; column_count: number; is_analysis: boolean; chart_config?: any } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
@@ -777,6 +778,14 @@ export default function Home() {
                   )}
                 </div>
               </div>
+
+              {/* Chart Visualization */}
+              {resultMetadata?.chart_config && (
+                <div className="p-4 border-b border-gray-100">
+                  <ChartVisualizer config={resultMetadata.chart_config} />
+                </div>
+              )}
+
               <ScrollArea className="table-scroll">
                 <Table>
                   <THead>
