@@ -490,17 +490,6 @@ class ChatHandler:
             # Show more rows for small results, paginate for larger ones
             total_rows = len(final_df)
             
-            # Generate markdown preview for the message
-            if total_rows <= 20:
-                preview_md = _df_to_markdown(final_df, total_rows)
-            elif total_rows <= 100:
-                preview_md = _df_to_markdown(final_df, 20)
-                preview_md += f"\n\n*Showing 20 of {total_rows} rows*"
-            else:
-            # Generate preview textual summary if needed, but DO NOT append markdown table
-            # The UI now handles preview in a separate panel.
-            # final_message += f"\n\n**Preview:**\n\n{preview_md}"
-            
             # Create structured preview data for the UI
             preview_data = final_df.head(50).replace({float('nan'): None}).to_dict(orient="records")
             metadata = {
