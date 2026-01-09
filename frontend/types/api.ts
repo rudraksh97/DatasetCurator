@@ -30,6 +30,12 @@ export interface PreviewResponse {
 export interface ChatResponse {
   user_message: string;
   assistant_message: string;
+  result_preview?: Array<Record<string, unknown>> | null;
+  result_metadata?: {
+    row_count: number;
+    column_count: number;
+    is_analysis: boolean;
+  } | null;
 }
 
 /** LLM model metadata returned from the backend. */

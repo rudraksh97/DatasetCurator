@@ -9,7 +9,7 @@ This module defines all REST API endpoints for:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Any, Optional
 
 import pandas as pd
 import uuid
@@ -46,6 +46,8 @@ class ChatResponse(BaseModel):
     """Response body for chat messages."""
     user_message: str
     assistant_message: str
+    result_preview: List[Dict[str, Any]] | None = None
+    result_metadata: Dict[str, Any] | None = None
 
 
 @router.get("/llm/models")
@@ -445,7 +447,7 @@ class ChatHandler:
         has_data: bool, 
         columns: list,
         approval_granted: bool | None = None,
-    ) -> str:
+    ) -> tuple[str, List[Dict[str, Any]] | None, Dict[str, Any] | None]:
         """Handle data transformation intent.
         
         Args:
@@ -455,10 +457,10 @@ class ChatHandler:
             columns: Available columns.
         
         Returns:
-            Response message.
+            Tuple of (Response message, Preview data, Metadata).
         """
         if not has_data:
-            return "**No data to transform.** Load a dataset first!"
+            return "**No data to transform.** Load a dataset first!", None, None
         
         data_path = state.curated_path or state.raw_path
         success, final_message, final_df, is_analysis = await execute_transformation(
@@ -481,21 +483,30 @@ class ChatHandler:
             
             # Show more rows for small results, paginate for larger ones
             total_rows = len(final_df)
-            if total_rows <= 20:
-                # Small result - show all rows
-                preview = _df_to_markdown(final_df, total_rows)
-            elif total_rows <= 100:
-                # Medium result - show first 20 with note
-                preview = _df_to_markdown(final_df, 20)
-                preview += f"\n\n*Showing 20 of {total_rows} rows*"
-            else:
-                # Large result - show first 10 with note
-                preview = _df_to_markdown(final_df, 10)
-                preview += f"\n\n*Showing 10 of {total_rows} rows. Check the Data Preview panel for full paginated view.*"
             
-            return final_message + f"\n\n**Preview:**\n\n{preview}"
+            # Generate markdown preview for the message
+            if total_rows <= 20:
+                preview_md = _df_to_markdown(final_df, total_rows)
+            elif total_rows <= 100:
+                preview_md = _df_to_markdown(final_df, 20)
+                preview_md += f"\n\n*Showing 20 of {total_rows} rows*"
+            else:
+                preview_md = _df_to_markdown(final_df, 10)
+                preview_md += f"\n\n*Showing 10 of {total_rows} rows. Check the Data Preview panel for full paginated view.*"
+            
+            final_message += f"\n\n**Preview:**\n\n{preview_md}"
+            
+            # Create structured preview data for the UI
+            preview_data = final_df.head(50).replace({float('nan'): None}).to_dict(orient="records")
+            metadata = {
+                "row_count": total_rows,
+                "column_count": len(final_df.columns),
+                "is_analysis": is_analysis
+            }
+            
+            return final_message, preview_data, metadata
         
-        return final_message if final_message else "I couldn't understand your transformation request."
+        return final_message if final_message else "I couldn't understand your transformation request.", None, None
     
     async def handle_chat(
         self, 
@@ -503,7 +514,7 @@ class ChatHandler:
         user_msg: str, 
         has_data: bool, 
         columns: list,
-    ) -> str:
+    ) -> tuple[str, None, None]:
         """Handle general chat intent.
         
         Args:
@@ -513,7 +524,7 @@ class ChatHandler:
             columns: Available columns.
         
         Returns:
-            Response message.
+            Tuple of (Response message, None, None).
         """
         if not has_data:
             return (
@@ -527,7 +538,7 @@ class ChatHandler:
         history = [{"role": m.get("role"), "content": m.get("content")} for m in state.chat_history]
         data_path = state.curated_path or state.raw_path
         
-        return await self._chat_service.chat(
+        response = await self._chat_service.chat(
             user_msg, 
             data_path=data_path, 
             context=context, 
@@ -535,6 +546,7 @@ class ChatHandler:
             session=self._session, 
             dataset_id=self._dataset_id,
         )
+        return response, None, None
     
     async def save_history(
         self, 
@@ -588,7 +600,7 @@ async def chat(
             print(f"[Chat] Intent classification warning: {intent_result.get('error')}")
 
         if intent in ("transform_data", "multi_transform"):
-            response = await handler.handle_transform(
+            response, result_preview, result_metadata = await handler.handle_transform(
                 state,
                 user_msg,
                 has_data,
@@ -596,11 +608,16 @@ async def chat(
                 approval_granted=message.approval_granted,
             )
         else:
-            response = await handler.handle_chat(state, user_msg, has_data, columns)
+            response, result_preview, result_metadata = await handler.handle_chat(state, user_msg, has_data, columns)
 
         await handler.save_history(state, user_msg, response, timestamp)
 
-        return ChatResponse(user_message=user_msg, assistant_message=response)
+        return ChatResponse(
+            user_message=user_msg, 
+            assistant_message=response,
+            result_preview=result_preview,
+            result_metadata=result_metadata
+        )
     
     except LLMRateLimitError as e:
         # Return rate limit error as a friendly message instead of 500

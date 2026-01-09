@@ -34,6 +34,8 @@ const DEFAULT_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 export default function Home() {
   const [datasetId, setDatasetId] = useState("");
   const [preview, setPreview] = useState<UploadResponse["preview"]>([]);
+  const [resultPreview, setResultPreview] = useState<UploadResponse["preview"] | null>(null);
+  const [resultMetadata, setResultMetadata] = useState<{ row_count: number; column_count: number; is_analysis: boolean } | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
@@ -181,6 +183,8 @@ export default function Home() {
     setDatasetId("");
     setActiveSession(null);
     setPreview([]);
+    setResultPreview(null);
+    setResultMetadata(null);
     setCurrentPage(1);
     setTotalPages(1);
     setTotalRows(0);
@@ -223,6 +227,12 @@ export default function Home() {
     try {
       const response = await sendChatMessage(sessionId, prompt, llmModel);
       addMessage("assistant", response.assistant_message);
+
+      if (response.result_preview) {
+        setResultPreview(response.result_preview);
+        setResultMetadata(response.result_metadata || null);
+      }
+
       // Refresh preview
       try {
         const data = await getPreview(sessionId, currentPage, 50);
@@ -290,6 +300,8 @@ export default function Home() {
       const newPreview = res.preview || [];
 
       setPreview(newPreview);
+      setResultPreview(null);
+      setResultMetadata(null);
       setCurrentPage(res.page || 1);
       setTotalPages(res.total_pages || 1);
       setTotalRows(res.total_rows || res.row_count || 0);
@@ -353,6 +365,12 @@ export default function Home() {
       try {
         const response = await sendChatMessage(sessionId, msg, llmModel);
         addMessage("assistant", response.assistant_message);
+
+        if (response.result_preview) {
+          setResultPreview(response.result_preview);
+          setResultMetadata(response.result_metadata || null);
+        }
+
         try {
           const data = await getPreview(sessionId, currentPage, 50);
           if (data) {
@@ -381,6 +399,12 @@ export default function Home() {
       try {
         const response = await sendChatMessage(sessionId, msg, llmModel, true);
         addMessage("assistant", response.assistant_message);
+
+        if (response.result_preview) {
+          setResultPreview(response.result_preview);
+          setResultMetadata(response.result_metadata || null);
+        }
+
         try {
           const data = await getPreview(sessionId, currentPage, 50);
           if (data) {
@@ -738,6 +762,51 @@ export default function Home() {
               </div>
             )}
           </Card>
+
+          {/* Chat Result Preview */}
+          {resultPreview && resultPreview.length > 0 && (
+            <Card style={{ flex: 1, marginTop: "16px", minHeight: 0, maxHeight: "unset", display: "flex", flexDirection: "column" }}>
+              <div className="data-header">
+                <h2>Operation Result {resultMetadata?.is_analysis ? "(Analysis)" : ""}</h2>
+                <div className="data-stats">
+                  {resultMetadata && (
+                    <>
+                      <Badge variant="secondary">{resultMetadata.column_count} columns</Badge>
+                      <Badge variant="secondary">{resultMetadata.row_count} rows</Badge>
+                    </>
+                  )}
+                </div>
+              </div>
+              <ScrollArea className="table-scroll">
+                <Table>
+                  <THead>
+                    <TR>
+                      {Object.keys(resultPreview[0]).map((col: string) => (
+                        <TH key={col} className="sticky-th">{col}</TH>
+                      ))}
+                    </TR>
+                  </THead>
+                  <TBody>
+                    {resultPreview.map((row: Record<string, unknown>, idx: number) => (
+                      <TR key={idx}>
+                        {Object.entries(row).map(([col, val]: [string, unknown]) => (
+                          <TD
+                            key={col}
+                            className={typeof val === "number" || (!isNaN(Number(val)) && val !== null && val !== "") ? "num-cell" : ""}
+                          >
+                            {val === null || val === "" ? <span className="null-value">null</span> : String(val)}
+                          </TD>
+                        ))}
+                      </TR>
+                    ))}
+                  </TBody>
+                </Table>
+              </ScrollArea>
+              <div style={{ padding: "0.5rem 1rem", fontSize: "0.8rem", color: "var(--text-muted)", borderTop: "1px solid var(--border)" }}>
+                Showing top 50 rows of result
+              </div>
+            </Card>
+          )}
         </div>
       </main>
     </div>

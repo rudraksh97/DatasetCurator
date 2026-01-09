@@ -258,21 +258,16 @@ def check_approval_node(state: TransformationState) -> TransformationState:
     if state["current_step_idx"] >= len(state["steps"]):
         return state
     
-    if not settings.workflow.require_approval:
+    # If already approved, we can proceed
+    if state.get("approval_granted"):
+        return {**state, "needs_approval": False}
+
+    # Analysis operations are safe (read-only views)
+    if state.get("is_analysis"):
         return {**state, "needs_approval": False}
     
-    step = state["steps"][state["current_step_idx"]]
-    operation = step.get("operation", "")
-    
-    destructive_ops = ["drop_column", "drop_rows", "drop_nulls", "drop_duplicates"]
-    
-    needs_approval = False
-    if operation in destructive_ops:
-        df = state["df"]
-        if df is not None and len(df) > settings.workflow.approval_row_threshold:
-            needs_approval = True
-    
-    return {**state, "needs_approval": needs_approval}
+    # Any permanent change (non-analysis) requires approval
+    return {**state, "needs_approval": True}
 
 
 def _create_step_result(
